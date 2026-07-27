@@ -202,6 +202,68 @@
     .drop strong { color: var(--accent); }
     .drop input { display: none; }
 
+    .capture-row {
+      margin-top: 0.75rem;
+    }
+
+    .btn-camera {
+      appearance: none;
+      width: 100%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.65rem;
+      border: 1px solid rgba(77, 141, 255, 0.45);
+      background: linear-gradient(180deg, rgba(77, 141, 255, 0.18), rgba(77, 141, 255, 0.08));
+      color: var(--text);
+      font: inherit;
+      font-size: 0.9rem;
+      font-weight: 600;
+      padding: 0.9rem 1.15rem;
+      border-radius: 12px;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s, box-shadow 0.15s, transform 0.12s;
+    }
+
+    .btn-camera:hover {
+      border-color: var(--accent);
+      background: var(--accent-dim);
+      box-shadow: 0 0 0 3px rgba(77, 141, 255, 0.15);
+    }
+
+    .btn-camera:active {
+      transform: translateY(1px);
+    }
+
+    .btn-camera svg {
+      width: 22px;
+      height: 22px;
+      flex-shrink: 0;
+      color: var(--accent);
+    }
+
+    .btn-camera .btn-camera-sub {
+      display: block;
+      font-size: 0.7rem;
+      font-weight: 500;
+      color: var(--muted);
+      margin-top: 0.12rem;
+    }
+
+    .btn-camera-text {
+      text-align: left;
+      line-height: 1.25;
+    }
+
+    #fileCamera {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+    }
+
     .drop-icon {
       width: 42px;
       height: 42px;
@@ -291,9 +353,14 @@
       box-shadow: 0 0 0 3px var(--accent-dim);
     }
 
-    .field input[readonly],
-    .field textarea[readonly] {
-      cursor: default;
+    .field input:not([readonly]) {
+      cursor: text;
+    }
+
+    .field .field-hint {
+      margin-top: 0.35rem;
+      font-size: 0.72rem;
+      color: var(--muted);
     }
 
     .row-2 {
@@ -469,6 +536,32 @@
             <div class="hint">PDF · PNG · JPG · WEBP</div>
           </label>
 
+          <div class="capture-row">
+            <!-- capture=environment → cámara trasera en móviles -->
+            <input
+              type="file"
+              id="fileCamera"
+              accept="image/*"
+              capture="environment"
+            />
+            <button type="button" class="btn-camera" id="btnCamera" title="Abrir cámara trasera / webcam">
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path
+                  d="M9 7l1.2-2.2A1.5 1.5 0 0111.5 4h1a1.5 1.5 0 011.3.8L15 7h3.5A2.5 2.5 0 0121 9.5v8A2.5 2.5 0 0118.5 20h-13A2.5 2.5 0 013 17.5v-8A2.5 2.5 0 015.5 7H9z"
+                  stroke="currentColor"
+                  stroke-width="1.7"
+                  stroke-linejoin="round"
+                />
+                <circle cx="12" cy="13" r="3.4" stroke="currentColor" stroke-width="1.7" />
+                <circle cx="17.4" cy="10.2" r="0.9" fill="currentColor" />
+              </svg>
+              <span class="btn-camera-text">
+                Escanear con cámara
+                <span class="btn-camera-sub">Tomar foto de la portada</span>
+              </span>
+            </button>
+          </div>
+
           <p class="file-meta" id="fileMeta"></p>
 
           <div class="preview-wrap empty" id="preview"></div>
@@ -486,12 +579,13 @@
           <form class="form" id="formResultados" onsubmit="return false;">
             <div class="field">
               <label for="fTitulo">Título de la capacitación</label>
-              <input id="fTitulo" type="text" readonly placeholder="—" />
+              <input id="fTitulo" type="text" autocomplete="off" placeholder="Escribe o corrige el título…" />
+              <p class="field-hint">Editable: corrige a mano si el OCR falla.</p>
             </div>
 
             <div class="field">
               <label for="fFecha">Fecha</label>
-              <input id="fFecha" type="text" readonly placeholder="—" />
+              <input id="fFecha" type="text" autocomplete="off" placeholder="DD-MM-YY" />
               <div class="fecha-stack" style="margin-top:0.55rem">
                 <div class="fecha-chip">Fecha IxT: <strong id="fFechaTxt">—</strong></div>
               </div>
@@ -500,20 +594,21 @@
             <div class="row-2">
               <div class="field">
                 <label for="fHoraInicio">Hora inicio</label>
-                <input id="fHoraInicio" type="text" readonly placeholder="—" />
+                <input id="fHoraInicio" type="text" autocomplete="off" placeholder="HH:MM hrs" />
               </div>
               <div class="field">
                 <label for="fHoraFin">Hora fin</label>
-                <input id="fHoraFin" type="text" readonly placeholder="—" />
+                <input id="fHoraFin" type="text" autocomplete="off" placeholder="HH:MM hrs" />
               </div>
             </div>
 
             <div class="field">
               <label for="fNombre">Nombre sugerido del archivo</label>
               <div class="copy-wrap">
-                <input id="fNombre" type="text" readonly placeholder="—" />
+                <input id="fNombre" type="text" autocomplete="off" placeholder="Se actualiza con título + fecha…" />
                 <button type="button" class="btn-copy" id="btnCopy">Copiar</button>
               </div>
+              <p class="field-hint">Se recalcula al editar el título o la fecha; también puedes ajustarlo a mano.</p>
             </div>
           </form>
         </div>
@@ -544,9 +639,15 @@
 
   <script type="module">
     import { procesarDocumento } from './index.js';
+    import {
+      construirNombreSugerido,
+      formatearFechaTxt,
+    } from './parser.js';
 
     const drop = document.getElementById('drop');
     const input = document.getElementById('file');
+    const fileCamera = document.getElementById('fileCamera');
+    const btnCamera = document.getElementById('btnCamera');
     const status = document.getElementById('status');
     const badge = document.getElementById('badge');
     const preview = document.getElementById('preview');
@@ -564,6 +665,8 @@
     const fNombre = document.getElementById('fNombre');
 
     let previewUrl = null;
+    /** Evita que un OCR en curso pise ediciones manuales posteriores. */
+    let generacionOcr = 0;
 
     function setStatus(msg, cls = '') {
       status.textContent = msg;
@@ -573,6 +676,21 @@
     function setBadge(cls, text) {
       badge.className = 'badge ' + cls;
       badge.textContent = text;
+    }
+
+    function valorCampo(v) {
+      if (v == null) return '';
+      const s = String(v).trim();
+      if (!s || s === '—' || s === '--' || s === '-') return '';
+      return s;
+    }
+
+    /** Actualiza nombre sugerido e IxT a partir del título/fecha actuales. */
+    function sincronizarNombreYFechaTxt() {
+      const titulo = valorCampo(fTitulo.value);
+      const fecha = valorCampo(fFecha.value);
+      fNombre.value = construirNombreSugerido(titulo, fecha);
+      fFechaTxt.textContent = formatearFechaTxt(fecha) || '—';
     }
 
     function limpiarFormulario() {
@@ -585,13 +703,23 @@
     }
 
     function llenarFormulario(datos = {}) {
-      fTitulo.value = datos.titulo || '';
-      fFecha.value = datos.fecha || '';
-      fFechaTxt.textContent = datos.fechaTxt || '—';
-      fHoraInicio.value = datos.horaInicio || '';
-      fHoraFin.value = datos.horaFin || '';
-      fNombre.value = datos.nombreSugerido || datos.tituloPdf || '';
+      // Vacío si OCR falló: el usuario puede completar a mano
+      fTitulo.value = valorCampo(datos.titulo);
+      fFecha.value = valorCampo(datos.fecha);
+      fHoraInicio.value = valorCampo(datos.horaInicio);
+      fHoraFin.value = valorCampo(datos.horaFin);
+      sincronizarNombreYFechaTxt();
+      // Preferir nombre del OCR si coincide; si no, el dinámico ya quedó
+      const sugeridoOcr = valorCampo(datos.nombreSugerido);
+      if (sugeridoOcr) fNombre.value = sugeridoOcr;
+      const ixT = valorCampo(datos.fechaTxt);
+      if (ixT) fFechaTxt.textContent = ixT;
     }
+
+    fTitulo.addEventListener('input', sincronizarNombreYFechaTxt);
+    fFecha.addEventListener('input', sincronizarNombreYFechaTxt);
+    fTitulo.addEventListener('change', sincronizarNombreYFechaTxt);
+    fFecha.addEventListener('change', sincronizarNombreYFechaTxt);
 
     function mostrarPreview(file) {
       if (previewUrl) {
@@ -626,6 +754,7 @@
     async function procesar(file) {
       if (!file) return;
 
+      const gen = ++generacionOcr;
       mostrarPreview(file);
       setBadge('busy', 'Procesando…');
       setStatus(`Procesando «${file.name}»…`, 'busy');
@@ -634,7 +763,10 @@
       out.textContent = '{}';
       raw.textContent = '—';
 
+      // Campos siguen editables durante el OCR (no se bloquean)
       const resultado = await procesarDocumento(file);
+      if (gen !== generacionOcr) return;
+
       console.log('[ocr-module] resultado:', resultado);
 
       llenarFormulario(resultado.datos || {});
@@ -644,10 +776,24 @@
 
       if (resultado.exito) {
         setBadge('ok', 'Extracción exitosa');
-        setStatus('Extracción completada.', 'ok');
+        const d = resultado.datos || {};
+        const faltan = ['titulo', 'fecha', 'horaInicio', 'horaFin']
+          .filter((k) => !valorCampo(d[k]));
+        if (faltan.length) {
+          setStatus(
+            'Extracción parcial: completa a mano los campos vacíos.',
+            'ok'
+          );
+        } else {
+          setStatus('Extracción completada. Puedes corregir cualquier campo.', 'ok');
+        }
       } else {
         setBadge('err', 'Error de extracción');
-        setStatus('Error: ' + (resultado.error || 'desconocido'), 'err');
+        setStatus(
+          'Error: ' + (resultado.error || 'desconocido') +
+            ' — puedes llenar los campos manualmente.',
+          'err'
+        );
       }
     }
 
@@ -666,6 +812,28 @@
     input.addEventListener('change', () => {
       procesar(input.files?.[0]);
       input.value = '';
+    });
+
+    // Cámara / Lens: abre capture=environment y dispara OCR al instante
+    btnCamera.addEventListener('click', () => {
+      fileCamera.value = '';
+      fileCamera.click();
+    });
+
+    fileCamera.addEventListener('change', () => {
+      const file = fileCamera.files?.[0];
+      if (!file) return;
+      // Renombrar de forma legible si el SO no da nombre útil
+      const nombre =
+        file.name && file.name !== 'image.jpg'
+          ? file.name
+          : `captura-portada-${Date.now()}.jpg`;
+      const archivo =
+        file.name === nombre
+          ? file
+          : new File([file], nombre, { type: file.type || 'image/jpeg' });
+      procesar(archivo);
+      fileCamera.value = '';
     });
 
     document.getElementById('btnFixture').addEventListener('click', async () => {

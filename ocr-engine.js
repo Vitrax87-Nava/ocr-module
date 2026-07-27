@@ -1,11 +1,11 @@
 /**
- * ocr-engine.js — Capas de color genéricas y rápidas (sin OCR de hoja completa).
+ * ocr-engine.js — Extracción por ROI fijas de portada + capas de color.
  *
- * Capas:
- *  - titulo     → blanco / gris claro
- *  - fecha      → rojo/naranja + azul (OCR por subcapa, se elige la legible)
- *  - horaInicio → amarillo
- *  - horaFin    → verde
+ * Regiones estándar (porcentajes de la página):
+ *  - titulo      → Y 0–35% (blanco/gris)
+ *  - fecha       → X 30–70%, Y 65–100% (rojo/azul)
+ *  - horaInicio  → X 0–30%, Y 65–100% (amarillo)
+ *  - horaFin     → X 70–100%, Y 65–100% (verde)
  */
 
 const TESSERACT_CDN = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
@@ -13,22 +13,34 @@ const PDFJS_CDN = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.min
 const PDFJS_WORKER = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.worker.min.mjs';
 
 const PDF_RENDER_SCALE = 1.5;
-/** Más bajo: trazos de lápiz/plumón delgados generan pocos píxeles. */
-const MIN_PIXELES_OCR = 40;
-const ROI_PADDING = 14;
+const MIN_PIXELES_OCR = 25;
 const ROI_MIN_WIDTH = 360;
-/** Radio de dilatación para unir trazos finos (color). */
 const DILATE_RADIUS = 1;
-/** Umbral de binarización previo a Tesseract. */
 const BINARIZE_THRESHOLD = 128;
-/** Solo dígitos y separadores para fecha/hora (evita alucinaciones). */
 const WHITELIST_FECHA_HORA = '0123456789:-/ ';
 
+/**
+ * Bounding boxes fijos — estructura estándar de portada:
+ *  título arriba | fecha centro-inferior | horaIni izq | horaFin der
+ */
+const ROI_FIJAS = {
+  titulo: { x0: 0, y0: 0, x1: 1, y1: 0.55 },
+  fecha: { x0: 0.05, y0: 0.55, x1: 0.72, y1: 0.88 },
+  horaInicio: { x0: 0, y0: 0.78, x1: 0.38, y1: 1 },
+  horaFin: { x0: 0.48, y0: 0.76, x1: 1, y1: 1 },
+};
+
 const PREDICADOS = {
+  // Blanco puro del título (evitar papel gris claro = ruido masivo)
   titulo: (hsv, r, g, b) => {
     const lum = 0.299 * r + 0.587 * g + 0.114 * b;
-    const neutro = Math.max(Math.abs(r - g), Math.abs(g - b), Math.abs(r - b)) < 45;
-    return lum >= 155 && hsv.s <= 0.35 && neutro;
+    const neutro = Math.max(Math.abs(r - g), Math.abs(g - b), Math.abs(r - b)) < 40;
+    return lum >= 200 && hsv.s <= 0.25 && neutro;
+  },
+  // Respaldo: trazo oscuro/lápiz en franja de título
+  tituloOscuro: (hsv, r, g, b) => {
+    const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+    return lum <= 90 && hsv.s <= 0.45;
   },
   rojo: (hsv, r, g, b) =>
     (((hsv.h <= 48) || hsv.h >= 335) && hsv.s >= 0.22 && hsv.v >= 0.22) ||
@@ -110,57 +122,22 @@ function normalizarRawText(texto) {
     .join('\n');
 }
 
-/** Correcciones OCR en dígitos; cuidado con horas 10→00. */
+/** Correcciones mínimas de confusión visual (sin inventar valores). */
 function corregirDigitosOcr(texto, esHora = false) {
   let t = String(texto || '');
-
-  if (esHora) {
-    t = t
-      .replace(/\b00\s*([:.])/g, '10$1')
-      .replace(/\b[lI|]\s*[O0]\s*([:.])/g, '10$1')
-      .replace(/\b[O0][O0]\s*([:.])/gi, '10$1')
-      .replace(/\b00([0-5]\d)\b/g, '10$1');
-  }
 
   t = t
     .replace(/[OoD]/g, '0')
     .replace(/[Il|]/g, '1')
     .replace(/[Zz]/g, '2')
     .replace(/[¢©]/g, '6')
-    .replace(/[£]/g, '1')
-    .replace(/\bhos\b/gi, 'hrs')
-    .replace(/\bhes\b/gi, 'hrs')
-    .replace(/\bhs\b/gi, 'hrs');
+    .replace(/[£]/g, '1');
 
-  if (esHora) {
-    t = t
-      .replace(/\b([01]?\d|2[0-3])\s*[sS][0Oo]\b/g, '$1:30')
-      .replace(/\b([01]?\d|2[0-3])\s*[sS](\d)\b/g, '$1:3$2')
-      .replace(/\b(\d)[Yy]\b(?=\s*(?:hrs?|hes|hs|[ap]\.?m))/gi, '$14:00')
-      .replace(/\b([01]?\d|2[0-3])\s+00(?=\s*(?:hrs?|hs|h|\b))/gi, '$1:00')
-      .replace(/\b([01]?\d|2[0-3])\s+00\b/g, '$1:00')
-      .replace(/\b00\s*([:.])/g, '10$1')
-      .replace(/\b00([0-5]\d)\b/g, '10$1');
-  } else {
+  if (!esHora) {
     t = t.replace(/[Ss]/g, '5').replace(/[Bb]/g, '8');
   }
 
   return t;
-}
-
-function pareceSalidaUtil(texto, tipo) {
-  const t = String(texto || '');
-  if (tipo === 'fecha') {
-    return /\d{1,2}\s*[-/.:]\s*\d/.test(t);
-  }
-  if (tipo === 'hora') {
-    return (
-      /\d{1,2}\s*[:.\s]\s*\d{2}/.test(t) ||
-      /\b\d{3,4}\b/.test(t) ||
-      /\d{1,2}\s+\d{2}/.test(t)
-    );
-  }
-  return t.trim().length > 0;
 }
 
 function sanitizarSalidaNumerica(texto) {
@@ -168,6 +145,22 @@ function sanitizarSalidaNumerica(texto) {
     .replace(/[^0-9:\-/\s\n]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function pareceSalidaUtil(texto, tipo) {
+  const t = String(texto || '');
+  if (tipo === 'fecha') {
+    return /\d{1,2}\s*[-/.:]\s*\d{1,2}\s*[-/.:]\s*\d{2,4}/.test(t);
+  }
+  if (tipo === 'hora') {
+    // Aceptar HH:MM, HHMM o "HH MM" (whitelist a menudo pierde los :)
+    return (
+      /\d{1,2}\s*[:.]\s*\d{2}/.test(t) ||
+      /\b([01]\d|2[0-3])[0-5]\d\b/.test(t) ||
+      /\b([01]?\d|2[0-3])\s+[0-5]\d\b/.test(t)
+    );
+  }
+  return t.trim().length > 0;
 }
 
 function rgbAHsv(r, g, b) {
@@ -270,9 +263,62 @@ function crearMascaraColor(fuente, predicado, { dilatar = true, radio = DILATE_R
   };
 }
 
-function recortarRoi(mascara, bbox) {
+/**
+ * Recorta una región fija de la página (coordenadas relativas 0–1).
+ * @returns {HTMLCanvasElement|null}
+ */
+function recortarRegionFija(pagina, region) {
+  if (!pagina || !region) return null;
+  const w = pagina.width;
+  const h = pagina.height;
+  const x = Math.max(0, Math.floor(region.x0 * w));
+  const y = Math.max(0, Math.floor(region.y0 * h));
+  const x2 = Math.min(w, Math.ceil(region.x1 * w));
+  const y2 = Math.min(h, Math.ceil(region.y1 * h));
+  const rw = x2 - x;
+  const rh = y2 - y;
+  if (rw < 8 || rh < 8) return null;
+
+  const out = document.createElement('canvas');
+  out.width = rw;
+  out.height = rh;
+  const ctx = out.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, rw, rh);
+  ctx.drawImage(pagina, x, y, rw, rh, 0, 0, rw, rh);
+  return out;
+}
+
+function escalarCanvas(canvas, { minWidth = ROI_MIN_WIDTH, minHeight = 48, scaleExtra = 1 } = {}) {
+  if (!canvas) return null;
+  let outW = canvas.width;
+  let outH = canvas.height;
+  const targetW = Math.round(minWidth * scaleExtra);
+  if (outW < targetW) {
+    const f = targetW / outW;
+    outW = Math.round(outW * f);
+    outH = Math.round(outH * f);
+  }
+  if (outH < minHeight) {
+    const f = minHeight / outH;
+    outW = Math.round(outW * f);
+    outH = minHeight;
+  }
+  if (outW === canvas.width && outH === canvas.height) return canvas;
+  const out = document.createElement('canvas');
+  out.width = outW;
+  out.height = outH;
+  const ctx = out.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, outW, outH);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(canvas, 0, 0, outW, outH);
+  return out;
+}
+
+function recortarRoi(mascara, bbox, { minWidth = ROI_MIN_WIDTH, scaleExtra = 1 } = {}) {
   if (!bbox || !mascara) return null;
-  const pad = ROI_PADDING;
+  const pad = 8;
   const x = Math.max(0, bbox.minX - pad);
   const y = Math.max(0, bbox.minY - pad);
   const x2 = Math.min(mascara.width - 1, bbox.maxX + pad);
@@ -281,38 +327,32 @@ function recortarRoi(mascara, bbox) {
   const rh = y2 - y + 1;
   if (rw < 4 || rh < 4) return null;
 
-  let outW = rw;
-  let outH = rh;
-  if (outW < ROI_MIN_WIDTH) {
-    const f = ROI_MIN_WIDTH / outW;
-    outW = Math.round(outW * f);
-    outH = Math.round(outH * f);
-  }
-
   const out = document.createElement('canvas');
-  out.width = outW;
-  out.height = outH;
+  out.width = rw;
+  out.height = rh;
   const ctx = out.getContext('2d');
   ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, outW, outH);
+  ctx.fillRect(0, 0, rw, rh);
   ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(mascara, x, y, rw, rh, 0, 0, outW, outH);
-  return out;
+  ctx.drawImage(mascara, x, y, rw, rh, 0, 0, rw, rh);
+  return escalarCanvas(out, { minWidth, scaleExtra });
 }
 
 /**
- * Morfología binaria sobre máscara de tinta (1 = tinta).
+ * Morfología binaria con kernel rectangular (equiv. OpenCV morphologyEx).
  * @param {'erode'|'dilate'} op
+ * @param {number} kw ancho del kernel (impar preferible)
+ * @param {number} kh alto del kernel
  */
-function morfologiaInk(ink, w, h, op, radio = 1) {
+function morfologiaKernel(ink, w, h, op, kw, kh) {
   const out = new Uint8Array(w * h);
-  const R = radio;
+  const rx = Math.max(0, Math.floor(kw / 2));
+  const ry = Math.max(0, Math.floor(kh / 2));
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       let val = op === 'erode' ? 1 : 0;
-      outer: for (let dy = -R; dy <= R; dy++) {
-        for (let dx = -R; dx <= R; dx++) {
-          if (dx * dx + dy * dy > R * R) continue;
+      outer: for (let dy = -ry; dy <= ry; dy++) {
+        for (let dx = -rx; dx <= rx; dx++) {
           const nx = x + dx;
           const ny = y + dy;
           if (nx < 0 || ny < 0 || nx >= w || ny >= h) {
@@ -339,44 +379,52 @@ function morfologiaInk(ink, w, h, op, radio = 1) {
   return out;
 }
 
+function openingKernel(ink, w, h, kw, kh) {
+  return morfologiaKernel(
+    morfologiaKernel(ink, w, h, 'erode', kw, kh),
+    w,
+    h,
+    'dilate',
+    kw,
+    kh
+  );
+}
+
+function morfologiaInk(ink, w, h, op, radio = 1) {
+  const k = radio * 2 + 1;
+  return morfologiaKernel(ink, w, h, op, k, k);
+}
+
 /**
- * Preprocesado obligatorio antes de Tesseract:
- * - Binariza si hace falta
- * - Garantiza texto negro sobre fondo blanco (Tesseract lo exige)
- * - Dilate suave solo si la ROI no viene ya binarizada de la máscara de color
- * @param {HTMLCanvasElement} canvas
- * @returns {HTMLCanvasElement}
+ * Supresión de líneas de cuadrícula (equiv. cv.morphologyEx OPEN
+ * con kernels horizontales/verticales alargados).
+ * Extrae líneas finas y las resta del ink, dejando solo trazos de dígitos.
+ * mode: 'hv' | 'h' | 'v'
  */
-function prepararRoiParaOcr(canvas) {
-  const w = canvas.width;
-  const h = canvas.height;
-  const ctx = canvas.getContext('2d');
-  const src = ctx.getImageData(0, 0, w, h);
-  const total = w * h;
-  const ink = new Uint8Array(total);
-  let pixBinarios = 0;
+function suprimirLineasCuadricula(ink, w, h, mode = 'hv') {
+  // Kernels largos y delgados: capturan líneas de libreta, no dígitos compactos
+  const lenH = Math.max(15, Math.min(55, Math.round(w * 0.22)));
+  const lenV = Math.max(15, Math.min(55, Math.round(h * 0.22)));
+  const lineas = new Uint8Array(w * h);
 
-  for (let i = 0, p = 0; i < src.data.length; i += 4, p++) {
-    const gray = 0.299 * src.data[i] + 0.587 * src.data[i + 1] + 0.114 * src.data[i + 2];
-    if (gray < 10 || gray > 245) pixBinarios++;
-    ink[p] = gray < BINARIZE_THRESHOLD ? 1 : 0;
+  if (mode === 'hv' || mode === 'h') {
+    const lineasH = openingKernel(ink, w, h, lenH, 1);
+    for (let i = 0; i < lineas.length; i++) if (lineasH[i]) lineas[i] = 1;
+  }
+  if (mode === 'hv' || mode === 'v') {
+    const lineasV = openingKernel(ink, w, h, 1, lenV);
+    for (let i = 0; i < lineas.length; i++) if (lineasV[i]) lineas[i] = 1;
   }
 
-  const yaBinaria = pixBinarios / total > 0.94;
-  let mapa = yaBinaria ? ink : morfologiaInk(ink, w, h, 'dilate', 1);
-
-  let tinta = 0;
-  for (let i = 0; i < mapa.length; i++) if (mapa[i]) tinta++;
-
-  if (tinta > mapa.length * 0.55) {
-    for (let i = 0; i < mapa.length; i++) mapa[i] = mapa[i] ? 0 : 1;
+  const out = new Uint8Array(w * h);
+  for (let i = 0; i < out.length; i++) {
+    out[i] = ink[i] && !lineas[i] ? 1 : 0;
   }
+  // Reconectar trazos de dígitos rotos por la resta
+  return morfologiaKernel(out, w, h, 'dilate', 3, 3);
+}
 
-  // Si ya era binaria y la polaridad es correcta, devolver el canvas original
-  if (yaBinaria && tinta <= mapa.length * 0.55) {
-    return canvas;
-  }
-
+function inkACanvas(mapa, w, h) {
   const out = document.createElement('canvas');
   out.width = w;
   out.height = h;
@@ -394,49 +442,120 @@ function prepararRoiParaOcr(canvas) {
 }
 
 /**
- * @param {HTMLCanvasElement} canvas
- * @param {string} etiqueta
- * @param {{ psm?: string, whitelist?: string|null, esHora?: boolean }} [opts]
+ * Preprocesado obligatorio:
+ * 1) Binarizar
+ * 2) Opcional: opening H/V (equiv. cv.morphologyEx) para quitar cuadrícula
+ * 3) Dilate suave + texto negro / fondo blanco
  */
+function prepararRoiParaOcr(canvas, opts = {}) {
+  const { suprimirCuadricula = false, modoLineas = 'hv' } = opts;
+  const w = canvas.width;
+  const h = canvas.height;
+  const src = canvas.getContext('2d').getImageData(0, 0, w, h);
+  const total = w * h;
+  const ink = new Uint8Array(total);
+  let pixBinarios = 0;
+
+  for (let i = 0, p = 0; i < src.data.length; i += 4, p++) {
+    const gray = 0.299 * src.data[i] + 0.587 * src.data[i + 1] + 0.114 * src.data[i + 2];
+    if (gray < 10 || gray > 245) pixBinarios++;
+    ink[p] = gray < BINARIZE_THRESHOLD ? 1 : 0;
+  }
+
+  let mapa = ink;
+  if (suprimirCuadricula) {
+    mapa = suprimirLineasCuadricula(ink, w, h, modoLineas);
+  } else {
+    // Máscara de color ya es B/N: no destruir trazos finos
+    const yaBinaria = pixBinarios / total > 0.92;
+    if (!yaBinaria) {
+      mapa = morfologiaKernel(ink, w, h, 'dilate', 2, 2);
+    }
+  }
+
+  let tinta = 0;
+  for (let i = 0; i < mapa.length; i++) if (mapa[i]) tinta++;
+  if (tinta > mapa.length * 0.55) {
+    for (let i = 0; i < mapa.length; i++) mapa[i] = mapa[i] ? 0 : 1;
+  }
+
+  // Si ya era B/N correcto y no se pidió morph, devolver original
+  if (!suprimirCuadricula && pixBinarios / total > 0.92 && tinta <= mapa.length * 0.55) {
+    return canvas;
+  }
+
+  return inkACanvas(mapa, w, h);
+}
+
 async function reconocerRoi(canvas, etiqueta, opts = {}) {
   if (!canvas?.width || !canvas?.height) return '';
   const {
     psm = '6',
     whitelist = null,
     esHora = false,
+    suprimirCuadricula = false,
   } = opts;
 
   const tipo = whitelist ? (esHora ? 'hora' : 'fecha') : 'titulo';
 
   try {
-    const preparado = prepararRoiParaOcr(canvas);
+    const preparado = prepararRoiParaOcr(canvas, {
+      suprimirCuadricula,
+      modoLineas: opts.modoLineas || 'hv',
+    });
     const worker = await obtenerWorker();
 
-    // Paso 1: whitelist + PSM pedido (fecha/hora)
     if (whitelist) {
       await worker.setParameters({
         tessedit_pageseg_mode: String(psm),
         tessedit_char_whitelist: whitelist,
       });
       const { data: d1 } = await worker.recognize(preparado);
-      const t1 = normalizarRawText(corregirDigitosOcr(d1?.text || '', esHora));
-      if (pareceSalidaUtil(t1, tipo)) {
-        console.log(`TesseractText [${etiqueta}] wl:`, t1);
-        return t1;
+      let t1 = sanitizarSalidaNumerica(corregirDigitosOcr(d1?.text || '', esHora));
+
+      await worker.setParameters({
+        tessedit_pageseg_mode: '6',
+        tessedit_char_whitelist: '',
+      });
+      const { data: d2 } = await worker.recognize(preparado);
+      let t2 = String(d2?.text || '');
+      if (esHora) {
+        t2 = t2
+          .replace(/\b([01]?\d|2[0-3])\s*[sS]([0-5]\d)\b/g, '$1:3$2')
+          .replace(/\b([01]?\d|2[0-3])\s*[sS][0Oo]\b/g, '$1:30');
       }
+      t2 = sanitizarSalidaNumerica(corregirDigitosOcr(t2, esHora));
+
+      const score = (t) => {
+        if (!pareceSalidaUtil(t, tipo)) return -1;
+        if (tipo === 'fecha' && /\d{1,2}\s*[-/.:]\s*\d{1,2}\s*[-/.:]\s*\d{2,4}/.test(t)) return 3;
+        if (tipo === 'hora' && /\d{1,2}\s*[:.]\s*\d{2}/.test(t)) return 3;
+        if (/\b\d{3,4}\b/.test(t)) return 2;
+        if (/\d+\s+\d{2}/.test(t)) return 1;
+        return 0;
+      };
+
+      let texto = '';
+      if (score(t2) > score(t1)) texto = t2;
+      else if (score(t1) >= 0) texto = t1;
+      else if (score(t2) >= 0) texto = t2;
+
+      if (!texto) {
+        console.log(`TesseractText [${etiqueta}] inválido:`, JSON.stringify({ t1, t2 }));
+        return '';
+      }
+      texto = normalizarRawText(texto);
+      console.log(`TesseractText [${etiqueta}]:`, texto);
+      return texto;
     }
 
-    // Paso 2: fallback sin letras (fecha/hora) o lectura libre (título)
-    const psmFb = tipo === 'titulo' ? String(psm) : '6';
     await worker.setParameters({
-      tessedit_pageseg_mode: psmFb,
+      tessedit_pageseg_mode: String(psm),
       tessedit_char_whitelist: '',
     });
-    const { data: d2 } = await worker.recognize(preparado);
-    let texto = corregirDigitosOcr(d2?.text || '', esHora);
-    if (whitelist) texto = sanitizarSalidaNumerica(texto);
-    texto = normalizarRawText(texto);
-    console.log(`TesseractText [${etiqueta}]${whitelist ? ' fb' : ''}:`, texto);
+    const { data } = await worker.recognize(preparado);
+    const texto = normalizarRawText(data?.text || '');
+    console.log(`TesseractText [${etiqueta}]:`, texto);
     return texto;
   } catch (err) {
     console.error(`[ocr-engine] Error (${etiqueta}):`, err);
@@ -445,68 +564,122 @@ async function reconocerRoi(canvas, etiqueta, opts = {}) {
 }
 
 /**
- * @param {{ canvas: HTMLCanvasElement, pixeles: number, bbox: object|null }} mascara
- * @param {string} etiqueta
- * @param {{ psm?: string, whitelist?: string|null, esHora?: boolean }} [opts]
+ * OCR dentro de una ROI fija: color SOLO en esa zona + prep + Tesseract.
  */
-async function ocrCapaSiUtil(mascara, etiqueta, opts = {}) {
-  if (!mascara || mascara.pixeles < MIN_PIXELES_OCR) {
-    console.log(`[ocr-engine] "${etiqueta}" omitida (px=${mascara?.pixeles ?? 0})`);
+async function ocrRegionFija(pagina, nombreRegion, predicados, opts = {}) {
+  const region = ROI_FIJAS[nombreRegion];
+  const zona = recortarRegionFija(pagina, region);
+  if (!zona) {
+    console.log(`[ocr-engine] ROI "${nombreRegion}" inválida`);
     return '';
   }
-  const roi = recortarRoi(mascara.canvas, mascara.bbox);
-  if (!roi) return '';
-  console.log(`[ocr-engine] OCR "${etiqueta}" ${roi.width}x${roi.height} px=${mascara.pixeles}`);
-  return reconocerRoi(roi, etiqueta, opts);
+
+  const lista = Array.isArray(predicados) ? predicados : [predicados];
+  const dilatar = opts.dilatar !== false;
+  const textos = [];
+  const areaZona = zona.width * zona.height;
+
+  for (let i = 0; i < lista.length; i++) {
+    const mascara = crearMascaraColor(zona, lista[i], {
+      dilatar,
+      radio: dilatar ? DILATE_RADIUS : 0,
+    });
+    // Si la máscara cubre demasiado, es fondo claro → ruido, no texto
+    if (mascara.pixeles > areaZona * 0.35) {
+      console.log(
+        `[ocr-engine] ROI "${nombreRegion}" pred#${i} omitida (ruido ${(
+          (100 * mascara.pixeles) /
+          areaZona
+        ).toFixed(0)}%)`
+      );
+      continue;
+    }
+    console.log(
+      `[ocr-engine] ROI "${nombreRegion}" pred#${i} px=${mascara.pixeles}` +
+        ` (${zona.width}x${zona.height})`
+    );
+    if (mascara.pixeles < MIN_PIXELES_OCR) continue;
+
+    let roi = recortarRoi(mascara.canvas, mascara.bbox, {
+      minWidth: ROI_MIN_WIDTH,
+      scaleExtra: opts.esHora ? 1.4 : 1,
+    });
+    if (!roi) {
+      roi = escalarCanvas(mascara.canvas, {
+        minWidth: ROI_MIN_WIDTH,
+        scaleExtra: opts.esHora ? 1.4 : 1,
+      });
+    }
+    const texto = await reconocerRoi(
+      roi,
+      `${nombreRegion}${lista.length > 1 ? `-${i}` : ''}`,
+      opts
+    );
+    if (texto) textos.push(texto);
+  }
+
+  return textos.join('\n');
 }
 
-/** ¿El texto parece fecha numérica usable? (whitelist sin letras) */
 function pareceFecha(texto) {
   return /\d{1,2}\s*[-/.:]\s*\d{1,2}\s*[-/.:]\s*\d{2,4}/.test(texto) ||
     /\d{1,2}\s*[-/.:]\s*\d{1,2}/.test(texto);
 }
 
-function pareceHora(texto) {
-  return /\d{1,2}\s*[:.]\s*\d{2}/.test(texto) ||
-    /\b\d{3,4}\b/.test(texto);
-}
-
 async function extraerPorCapas(pagina) {
   const t0 = performance.now();
-  const workerReady = obtenerWorker();
+  await obtenerWorker();
 
-  const mTitulo = crearMascaraColor(pagina, PREDICADOS.titulo, { dilatar: false });
-  const mRojo = crearMascaraColor(pagina, PREDICADOS.rojo, { dilatar: true, radio: 1 });
-  const mAzul = crearMascaraColor(pagina, PREDICADOS.azul, { dilatar: true, radio: 1 });
-  const mAmarillo = crearMascaraColor(pagina, PREDICADOS.amarillo, { dilatar: true, radio: 1 });
-  const mVerde = crearMascaraColor(pagina, PREDICADOS.verde, { dilatar: true, radio: 1 });
+  console.log('[ocr-engine] ROI fijas:', ROI_FIJAS);
 
-  console.log('[ocr-engine] Píxeles:', {
-    titulo: mTitulo.pixeles,
-    rojo: mRojo.pixeles,
-    azul: mAzul.pixeles,
-    amarillo: mAmarillo.pixeles,
-    verde: mVerde.pixeles,
-  });
+  const optsTitulo = {
+    psm: '6',
+    whitelist: null,
+    dilatar: false,
+    // Título: sin opening agresivo (borra trazos finos del blanco)
+    suprimirCuadricula: false,
+  };
+  const optsFecha = {
+    psm: '7',
+    whitelist: WHITELIST_FECHA_HORA,
+    dilatar: true,
+    // morphologyEx OPEN H+V — elimina cuadrícula
+    suprimirCuadricula: true,
+    modoLineas: 'hv',
+  };
+  const optsHora = {
+    psm: '7',
+    whitelist: WHITELIST_FECHA_HORA,
+    esHora: true,
+    dilatar: true,
+    // Horas: color mask ya aísla; morph H/V suele romper dígitos finos
+    suprimirCuadricula: false,
+  };
 
-  await workerReady;
+  const tituloBlanco = await ocrRegionFija(pagina, 'titulo', PREDICADOS.titulo, optsTitulo);
+  let titulo = tituloBlanco || '';
+  if (!titulo || titulo.replace(/\s/g, '').length < 3) {
+    const tituloOscuro = await ocrRegionFija(
+      pagina,
+      'titulo',
+      PREDICADOS.tituloOscuro,
+      { ...optsTitulo, dilatar: true }
+    );
+    if (tituloOscuro && tituloOscuro.replace(/\s/g, '').length > (titulo || '').replace(/\s/g, '').length) {
+      titulo = tituloOscuro;
+    }
+  }
 
-  const optsTitulo = { psm: '6', whitelist: null };
-  const optsFecha = { psm: '7', whitelist: WHITELIST_FECHA_HORA };
-  const optsHora = { psm: '7', whitelist: WHITELIST_FECHA_HORA, esHora: true };
-
-  const titulo = await ocrCapaSiUtil(mTitulo, 'titulo', optsTitulo);
-
-  const fechaRojo = await ocrCapaSiUtil(mRojo, 'fecha-rojo', optsFecha);
+  const fechaRojo = await ocrRegionFija(pagina, 'fecha', PREDICADOS.rojo, optsFecha);
   let fecha = pareceFecha(fechaRojo) ? fechaRojo : '';
   if (!fecha) {
-    const fechaAzul = await ocrCapaSiUtil(mAzul, 'fecha-azul', optsFecha);
+    const fechaAzul = await ocrRegionFija(pagina, 'fecha', PREDICADOS.azul, optsFecha);
     if (pareceFecha(fechaAzul)) fecha = fechaAzul;
     else fecha = [fechaRojo, fechaAzul].filter(Boolean).join('\n');
   }
 
-  const horaInicio = await ocrCapaSiUtil(mAmarillo, 'horaInicio', optsHora);
-  const horaFin = await ocrCapaSiUtil(mVerde, 'horaFin', optsHora);
+  const horaInicio = await ocrRegionFija(pagina, 'horaInicio', PREDICADOS.amarillo, optsHora);
+  const horaFin = await ocrRegionFija(pagina, 'horaFin', PREDICADOS.verde, optsHora);
 
   const capas = {
     titulo: titulo || '',

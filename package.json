@@ -1,0 +1,13 @@
+{
+  "name": "ocr-module",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:parser": "node scripts/bench-parser.mjs",
+    "test:ocr": "node scripts/bench-ocr.mjs"
+  },
+  "dependencies": {
+    "jimp": "^1.6.0",
+    "tesseract.js": "^5.1.1"
+  }
+}

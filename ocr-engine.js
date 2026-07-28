@@ -1,11 +1,11 @@
 /**
- * ocr-engine.js — Extracción por ROI fijas de portada + capas de color.
+ * ocr-engine.js — Extracción automática por zonas / color / patrón.
  *
- * Regiones estándar (porcentajes de la página):
- *  - titulo      → Y 0–35% (blanco/gris)
- *  - fecha       → X 30–70%, Y 65–100% (rojo/azul)
- *  - horaInicio  → X 0–30%, Y 65–100% (amarillo)
- *  - horaFin     → X 70–100%, Y 65–100% (verde)
+ * Al cargar un archivo se dispara el pipeline concurrente:
+ *  - titulo      → franja superior, texto libre (psm 6, sin whitelist)
+ *  - fecha       → centro-inferior (rojo/azul); el parser localiza por regex
+ *  - horaInicio  → esquina inferior izquierda (amarillo) → HH:mm 24h
+ *  - horaFin     → esquina inferior derecha (verde) → HH:mm 24h
  */
 
 const TESSERACT_CDN = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
@@ -17,27 +17,29 @@ const MIN_PIXELES_OCR = 25;
 const ROI_MIN_WIDTH = 360;
 const DILATE_RADIUS = 1;
 const BINARIZE_THRESHOLD = 128;
-const WHITELIST_FECHA_HORA = '0123456789:-/ ';
+/** Fecha: solo dígitos y guiones/barras (bloquea letras y ruido de cuadrícula). */
+const WHITELIST_FECHA = '0123456789-/';
+/** Horas laterales: solo dígitos y dos puntos (evita "hrs"/letras). */
+const WHITELIST_HORA = '0123456789:';
 
 /**
- * Bounding boxes fijos — estructura estándar de portada:
- *  título arriba | fecha centro-inferior | horaIni izq | horaFin der
+ * Bounding boxes fijos — estructura estándar de portada.
+ * Título con margen inferior holgado para no cortar trazos blancos.
  */
 const ROI_FIJAS = {
-  titulo: { x0: 0, y0: 0, x1: 1, y1: 0.55 },
-  fecha: { x0: 0.05, y0: 0.55, x1: 0.72, y1: 0.88 },
-  horaInicio: { x0: 0, y0: 0.78, x1: 0.38, y1: 1 },
-  horaFin: { x0: 0.48, y0: 0.76, x1: 1, y1: 1 },
+  titulo: { x0: 0, y0: 0, x1: 1, y1: 0.72 },
+  fecha: { x0: 0.2, y0: 0.55, x1: 0.75, y1: 0.9 },
+  horaInicio: { x0: 0, y0: 0.72, x1: 0.4, y1: 1 },
+  horaFin: { x0: 0.48, y0: 0.72, x1: 1, y1: 1 },
 };
 
 const PREDICADOS = {
-  // Blanco puro del título (evitar papel gris claro = ruido masivo)
+  // Trazo blanco del título (umbral calibrado; no recortar papel primero)
   titulo: (hsv, r, g, b) => {
     const lum = 0.299 * r + 0.587 * g + 0.114 * b;
-    const neutro = Math.max(Math.abs(r - g), Math.abs(g - b), Math.abs(r - b)) < 40;
-    return lum >= 200 && hsv.s <= 0.25 && neutro;
+    const neutro = Math.max(Math.abs(r - g), Math.abs(g - b), Math.abs(r - b)) < 45;
+    return lum >= 170 && hsv.s <= 0.35 && neutro;
   },
-  // Respaldo: trazo oscuro/lápiz en franja de título
   tituloOscuro: (hsv, r, g, b) => {
     const lum = 0.299 * r + 0.587 * g + 0.114 * b;
     return lum <= 90 && hsv.s <= 0.45;
@@ -59,6 +61,8 @@ const PREDICADOS = {
 let tesseractReady = null;
 let pdfjsReady = null;
 let workerPromise = null;
+/** Cola: un solo recognize a la vez sobre el worker singleton. */
+let colaOcr = Promise.resolve();
 
 async function cargarTesseract() {
   if (typeof window !== 'undefined' && window.Tesseract) return window.Tesseract;
@@ -78,6 +82,9 @@ async function cargarTesseract() {
   return tesseractReady;
 }
 
+/**
+ * Worker Tesseract persistente (singleton). Reutilizado entre escaneos.
+ */
 async function obtenerWorker() {
   if (workerPromise) return workerPromise;
   workerPromise = (async () => {
@@ -90,6 +97,20 @@ async function obtenerWorker() {
     throw err;
   });
   return workerPromise;
+}
+
+/** Precalienta el motor (CDN + worker) para el primer escaneo más rápido. */
+export async function precalentarMotor() {
+  await obtenerWorker();
+}
+
+function enColaOcr(tarea) {
+  const corrida = colaOcr.then(tarea, tarea);
+  colaOcr = corrida.then(
+    () => undefined,
+    () => undefined
+  );
+  return corrida;
 }
 
 async function cargarPdfJs() {
@@ -140,24 +161,56 @@ function corregirDigitosOcr(texto, esHora = false) {
   return t;
 }
 
-function sanitizarSalidaNumerica(texto) {
-  return String(texto || '')
+function sanitizarSalidaNumerica(texto, { soloHora = false, soloFecha = false } = {}) {
+  // Primero confusiones visuales (O/D→0), luego filtrar charset
+  let t = corregirDigitosOcr(texto, soloHora || soloFecha);
+  if (soloHora) {
+    return t
+      .replace(/[^0-9:]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+  if (soloFecha) {
+    // Whitelist estricta de zona fecha: 0-9, -, /
+    return t
+      .replace(/[^0-9\-/]/g, '')
+      .replace(/[-/]{2,}/g, '-')
+      .trim();
+  }
+  return t
     .replace(/[^0-9:\-/\s\n]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
+/** Limpieza ligera del título OCR (fluido → Título / Nombre sugerido). */
+function limpiarTituloOcr(texto) {
+  let t = normalizarRawText(texto);
+  if (!t) return '';
+  // Primera línea útil
+  t = t.split('\n').map((l) => l.trim()).find(Boolean) || t;
+  t = t.replace(/[,.;:_=\-|~'"“”‘’•·]+/g, ' ');
+  t = t.replace(/^[^A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9]+/u, '');
+  t = t.replace(/[^A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9]+$/u, '');
+  t = t.replace(/\s+/g, ' ').trim();
+  return t;
+}
+
 function pareceSalidaUtil(texto, tipo) {
   const t = String(texto || '');
   if (tipo === 'fecha') {
-    return /\d{1,2}\s*[-/.:]\s*\d{1,2}\s*[-/.:]\s*\d{2,4}/.test(t);
+    return (
+      /\d{1,2}\s*[-/]\s*\d{1,2}\s*[-/]\s*\d{2,4}/.test(t) ||
+      /\d{6,8}/.test(t.replace(/\D/g, '')) ||
+      /\d{2,}/.test(t)
+    );
   }
   if (tipo === 'hora') {
-    // Aceptar HH:MM, HHMM o "HH MM" (whitelist a menudo pierde los :)
     return (
       /\d{1,2}\s*[:.]\s*\d{2}/.test(t) ||
       /\b([01]\d|2[0-3])[0-5]\d\b/.test(t) ||
-      /\b([01]?\d|2[0-3])\s+[0-5]\d\b/.test(t)
+      /\b([01]?\d|2[0-3])\s+[0-5]\d\b/.test(t) ||
+      /\d{3,4}/.test(t)
     );
   }
   return t.trim().length > 0;
@@ -181,14 +234,29 @@ function rgbAHsv(r, g, b) {
   return { h, s: max === 0 ? 0 : d / max, v: max };
 }
 
-function crearMascaraColor(fuente, predicado, { dilatar = true, radio = DILATE_RADIUS } = {}) {
+/**
+ * Máscara de color restringida a una ROI (coords relativas 0–1).
+ * Se aplica sobre la página completa para no confundir papel claro con tinta.
+ */
+function crearMascaraColor(fuente, predicado, { dilatar = true, radio = DILATE_RADIUS, region = null } = {}) {
   const w = fuente.width;
   const h = fuente.height;
   const src = fuente.getContext('2d').getImageData(0, 0, w, h);
   const ink = new Uint8Array(w * h);
 
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
+  let x0 = 0;
+  let y0 = 0;
+  let x1 = w;
+  let y1 = h;
+  if (region) {
+    x0 = Math.max(0, Math.floor(region.x0 * w));
+    y0 = Math.max(0, Math.floor(region.y0 * h));
+    x1 = Math.min(w, Math.ceil(region.x1 * w));
+    y1 = Math.min(h, Math.ceil(region.y1 * h));
+  }
+
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
       const i = (y * w + x) * 4;
       const r = src.data[i];
       const g = src.data[i + 1];
@@ -316,13 +384,12 @@ function escalarCanvas(canvas, { minWidth = ROI_MIN_WIDTH, minHeight = 48, scale
   return out;
 }
 
-function recortarRoi(mascara, bbox, { minWidth = ROI_MIN_WIDTH, scaleExtra = 1 } = {}) {
+function recortarRoi(mascara, bbox, { minWidth = ROI_MIN_WIDTH, scaleExtra = 1, pad = 12, padBottom = 0 } = {}) {
   if (!bbox || !mascara) return null;
-  const pad = 8;
   const x = Math.max(0, bbox.minX - pad);
   const y = Math.max(0, bbox.minY - pad);
   const x2 = Math.min(mascara.width - 1, bbox.maxX + pad);
-  const y2 = Math.min(mascara.height - 1, bbox.maxY + pad);
+  const y2 = Math.min(mascara.height - 1, bbox.maxY + pad + padBottom);
   const rw = x2 - x + 1;
   const rh = y2 - y + 1;
   if (rw < 4 || rh < 4) return null;
@@ -493,83 +560,103 @@ async function reconocerRoi(canvas, etiqueta, opts = {}) {
     psm = '6',
     whitelist = null,
     esHora = false,
+    esTitulo = false,
+    esFecha = false,
     suprimirCuadricula = false,
   } = opts;
 
-  const tipo = whitelist ? (esHora ? 'hora' : 'fecha') : 'titulo';
+  const tipo = esTitulo ? 'titulo' : esHora ? 'hora' : esFecha ? 'fecha' : whitelist ? 'fecha' : 'titulo';
 
+  // Prep de imagen fuera de la cola (paralelo); recognize serializado
+  let preparado;
   try {
-    const preparado = prepararRoiParaOcr(canvas, {
+    preparado = prepararRoiParaOcr(canvas, {
       suprimirCuadricula,
       modoLineas: opts.modoLineas || 'hv',
     });
-    const worker = await obtenerWorker();
-
-    if (whitelist) {
-      await worker.setParameters({
-        tessedit_pageseg_mode: String(psm),
-        tessedit_char_whitelist: whitelist,
-      });
-      const { data: d1 } = await worker.recognize(preparado);
-      let t1 = sanitizarSalidaNumerica(corregirDigitosOcr(d1?.text || '', esHora));
-
-      await worker.setParameters({
-        tessedit_pageseg_mode: '6',
-        tessedit_char_whitelist: '',
-      });
-      const { data: d2 } = await worker.recognize(preparado);
-      let t2 = String(d2?.text || '');
-      if (esHora) {
-        t2 = t2
-          .replace(/\b([01]?\d|2[0-3])\s*[sS]([0-5]\d)\b/g, '$1:3$2')
-          .replace(/\b([01]?\d|2[0-3])\s*[sS][0Oo]\b/g, '$1:30');
-      }
-      t2 = sanitizarSalidaNumerica(corregirDigitosOcr(t2, esHora));
-
-      const score = (t) => {
-        if (!pareceSalidaUtil(t, tipo)) return -1;
-        if (tipo === 'fecha' && /\d{1,2}\s*[-/.:]\s*\d{1,2}\s*[-/.:]\s*\d{2,4}/.test(t)) return 3;
-        if (tipo === 'hora' && /\d{1,2}\s*[:.]\s*\d{2}/.test(t)) return 3;
-        if (/\b\d{3,4}\b/.test(t)) return 2;
-        if (/\d+\s+\d{2}/.test(t)) return 1;
-        return 0;
-      };
-
-      let texto = '';
-      if (score(t2) > score(t1)) texto = t2;
-      else if (score(t1) >= 0) texto = t1;
-      else if (score(t2) >= 0) texto = t2;
-
-      if (!texto) {
-        console.log(`TesseractText [${etiqueta}] inválido:`, JSON.stringify({ t1, t2 }));
-        return '';
-      }
-      texto = normalizarRawText(texto);
-      console.log(`TesseractText [${etiqueta}]:`, texto);
-      return texto;
-    }
-
-    await worker.setParameters({
-      tessedit_pageseg_mode: String(psm),
-      tessedit_char_whitelist: '',
-    });
-    const { data } = await worker.recognize(preparado);
-    const texto = normalizarRawText(data?.text || '');
-    console.log(`TesseractText [${etiqueta}]:`, texto);
-    return texto;
   } catch (err) {
-    console.error(`[ocr-engine] Error (${etiqueta}):`, err);
+    console.error(`[ocr-engine] Prep (${etiqueta}):`, err);
     return '';
   }
+
+  return enColaOcr(async () => {
+    try {
+      const worker = await obtenerWorker();
+
+      if (whitelist) {
+        await worker.setParameters({
+          tessedit_pageseg_mode: String(psm),
+          tessedit_char_whitelist: whitelist,
+        });
+        const { data: d1 } = await worker.recognize(preparado);
+        let t1 = sanitizarSalidaNumerica(d1?.text || '', {
+          soloHora: esHora,
+          soloFecha: esFecha,
+        });
+
+        await worker.setParameters({
+          tessedit_pageseg_mode: esHora ? '7' : '6',
+          tessedit_char_whitelist: '',
+        });
+        const { data: d2 } = await worker.recognize(preparado);
+        let t2 = String(d2?.text || '');
+        if (esHora) {
+          t2 = t2
+            .replace(/\b([01]?\d|2[0-3])\s*[sS]([0-5]\d)\b/g, '$1:3$2')
+            .replace(/\b([01]?\d|2[0-3])\s*[sS][0Oo]\b/g, '$1:30')
+            .replace(/\b([01]?\d|2[0-3])\s*[OoD]{1,2}[A-Za-z]*\b/g, '$1:00');
+        }
+        t2 = sanitizarSalidaNumerica(t2, {
+          soloHora: esHora,
+          soloFecha: esFecha,
+        });
+
+        const score = (t) => {
+          if (!pareceSalidaUtil(t, tipo)) return -1;
+          if (tipo === 'fecha' && /\d{1,2}\s*[-/]\s*\d{1,2}\s*[-/]\s*\d{2,4}/.test(t)) return 3;
+          if (tipo === 'hora' && /\d{1,2}\s*[:.]\s*\d{2}/.test(t)) return 3;
+          if (/\b\d{3,4}\b/.test(t)) return 2;
+          if (/\d+\s+\d{2}/.test(t)) return 1;
+          return 0;
+        };
+
+        let texto = '';
+        if (score(t2) > score(t1)) texto = t2;
+        else if (score(t1) >= 0) texto = t1;
+        else if (score(t2) >= 0) texto = t2;
+        else if (esHora) texto = t2 || t1;
+
+        if (!texto) {
+          console.log(`TesseractText [${etiqueta}] inválido:`, JSON.stringify({ t1, t2 }));
+          return '';
+        }
+        texto = normalizarRawText(texto);
+        console.log(`TesseractText [${etiqueta}]:`, texto);
+        return texto;
+      }
+
+      await worker.setParameters({
+        tessedit_pageseg_mode: String(psm),
+        tessedit_char_whitelist: '',
+      });
+      const { data } = await worker.recognize(preparado);
+      let texto = normalizarRawText(data?.text || '');
+      if (esTitulo) texto = limpiarTituloOcr(texto);
+      console.log(`TesseractText [${etiqueta}]:`, texto);
+      return texto;
+    } catch (err) {
+      console.error(`[ocr-engine] Error (${etiqueta}):`, err);
+      return '';
+    }
+  });
 }
 
 /**
- * OCR dentro de una ROI fija: color SOLO en esa zona + prep + Tesseract.
+ * OCR por zona: máscara de color ∩ ROI fija → prep → Tesseract.
  */
 async function ocrRegionFija(pagina, nombreRegion, predicados, opts = {}) {
   const region = ROI_FIJAS[nombreRegion];
-  const zona = recortarRegionFija(pagina, region);
-  if (!zona) {
+  if (!region || !pagina) {
     console.log(`[ocr-engine] ROI "${nombreRegion}" inválida`);
     return '';
   }
@@ -577,37 +664,50 @@ async function ocrRegionFija(pagina, nombreRegion, predicados, opts = {}) {
   const lista = Array.isArray(predicados) ? predicados : [predicados];
   const dilatar = opts.dilatar !== false;
   const textos = [];
-  const areaZona = zona.width * zona.height;
+  const areaRegion =
+    (region.x1 - region.x0) * pagina.width * ((region.y1 - region.y0) * pagina.height);
 
   for (let i = 0; i < lista.length; i++) {
-    const mascara = crearMascaraColor(zona, lista[i], {
+    const mascara = crearMascaraColor(pagina, lista[i], {
       dilatar,
       radio: dilatar ? DILATE_RADIUS : 0,
+      region,
     });
-    // Si la máscara cubre demasiado, es fondo claro → ruido, no texto
-    if (mascara.pixeles > areaZona * 0.35) {
+
+    // Fondo claro / máscara inundada → ruido
+    if (mascara.pixeles > areaRegion * 0.35) {
       console.log(
         `[ocr-engine] ROI "${nombreRegion}" pred#${i} omitida (ruido ${(
           (100 * mascara.pixeles) /
-          areaZona
+          areaRegion
         ).toFixed(0)}%)`
       );
       continue;
     }
     console.log(
       `[ocr-engine] ROI "${nombreRegion}" pred#${i} px=${mascara.pixeles}` +
-        ` (${zona.width}x${zona.height})`
+        ` (${pagina.width}x${pagina.height})`
     );
     if (mascara.pixeles < MIN_PIXELES_OCR) continue;
 
-    let roi = recortarRoi(mascara.canvas, mascara.bbox, {
+    let bbox = mascara.bbox;
+    // Hora fin: quedarse con la franja inferior del bbox (recorta ruido superior)
+    if (opts.recortarInferior && bbox) {
+      const alto = bbox.maxY - bbox.minY + 1;
+      const cut = bbox.minY + Math.floor(alto * 0.3);
+      bbox = { ...bbox, minY: Math.min(bbox.maxY - 4, Math.max(bbox.minY, cut)) };
+    }
+
+    let roi = recortarRoi(mascara.canvas, bbox, {
       minWidth: ROI_MIN_WIDTH,
-      scaleExtra: opts.esHora ? 1.4 : 1,
+      scaleExtra: opts.esHora ? 1.5 : opts.esTitulo ? 1.15 : 1,
+      pad: opts.esTitulo ? 20 : 12,
+      padBottom: opts.esTitulo ? 36 : 8,
     });
     if (!roi) {
       roi = escalarCanvas(mascara.canvas, {
         minWidth: ROI_MIN_WIDTH,
-        scaleExtra: opts.esHora ? 1.4 : 1,
+        scaleExtra: opts.esHora ? 1.5 : 1,
       });
     }
     const texto = await reconocerRoi(
@@ -621,69 +721,64 @@ async function ocrRegionFija(pagina, nombreRegion, predicados, opts = {}) {
   return textos.join('\n');
 }
 
-function pareceFecha(texto) {
-  return /\d{1,2}\s*[-/.:]\s*\d{1,2}\s*[-/.:]\s*\d{2,4}/.test(texto) ||
-    /\d{1,2}\s*[-/.:]\s*\d{1,2}/.test(texto);
-}
-
 async function extraerPorCapas(pagina) {
   const t0 = performance.now();
   await obtenerWorker();
 
-  console.log('[ocr-engine] ROI fijas:', ROI_FIJAS);
+  console.log('[ocr-engine] ROI fijas (concurrente):', ROI_FIJAS);
 
   const optsTitulo = {
     psm: '6',
     whitelist: null,
+    esTitulo: true,
     dilatar: false,
-    // Título: sin opening agresivo (borra trazos finos del blanco)
     suprimirCuadricula: false,
   };
   const optsFecha = {
     psm: '7',
-    whitelist: WHITELIST_FECHA_HORA,
+    whitelist: WHITELIST_FECHA,
+    esFecha: true,
     dilatar: true,
-    // morphologyEx OPEN H+V — elimina cuadrícula
     suprimirCuadricula: true,
     modoLineas: 'hv',
   };
   const optsHora = {
     psm: '7',
-    whitelist: WHITELIST_FECHA_HORA,
+    whitelist: WHITELIST_HORA,
     esHora: true,
     dilatar: true,
-    // Horas: color mask ya aísla; morph H/V suele romper dígitos finos
     suprimirCuadricula: false,
   };
 
-  const tituloBlanco = await ocrRegionFija(pagina, 'titulo', PREDICADOS.titulo, optsTitulo);
+  // Disparo concurrente: prep en paralelo + OCR en cola del singleton
+  const [tituloBlanco, fechaRojo, fechaAzul, horaInicio, horaFin] = await Promise.all([
+    ocrRegionFija(pagina, 'titulo', PREDICADOS.titulo, optsTitulo),
+    ocrRegionFija(pagina, 'fecha', PREDICADOS.rojo, optsFecha),
+    ocrRegionFija(pagina, 'fecha', PREDICADOS.azul, optsFecha),
+    ocrRegionFija(pagina, 'horaInicio', PREDICADOS.amarillo, optsHora),
+    ocrRegionFija(pagina, 'horaFin', PREDICADOS.verde, {
+      ...optsHora,
+      recortarInferior: true,
+    }),
+  ]);
+
   let titulo = tituloBlanco || '';
   if (!titulo || titulo.replace(/\s/g, '').length < 3) {
-    const tituloOscuro = await ocrRegionFija(
-      pagina,
-      'titulo',
-      PREDICADOS.tituloOscuro,
-      { ...optsTitulo, dilatar: true }
-    );
-    if (tituloOscuro && tituloOscuro.replace(/\s/g, '').length > (titulo || '').replace(/\s/g, '').length) {
+    const tituloOscuro = await ocrRegionFija(pagina, 'titulo', PREDICADOS.tituloOscuro, {
+      ...optsTitulo,
+      dilatar: true,
+    });
+    if (
+      tituloOscuro &&
+      tituloOscuro.replace(/\s/g, '').length > (titulo || '').replace(/\s/g, '').length
+    ) {
       titulo = tituloOscuro;
     }
   }
 
-  const fechaRojo = await ocrRegionFija(pagina, 'fecha', PREDICADOS.rojo, optsFecha);
-  let fecha = pareceFecha(fechaRojo) ? fechaRojo : '';
-  if (!fecha) {
-    const fechaAzul = await ocrRegionFija(pagina, 'fecha', PREDICADOS.azul, optsFecha);
-    if (pareceFecha(fechaAzul)) fecha = fechaAzul;
-    else fecha = [fechaRojo, fechaAzul].filter(Boolean).join('\n');
-  }
-
-  const horaInicio = await ocrRegionFija(pagina, 'horaInicio', PREDICADOS.amarillo, optsHora);
-  const horaFin = await ocrRegionFija(pagina, 'horaFin', PREDICADOS.verde, optsHora);
-
   const capas = {
     titulo: titulo || '',
-    fecha: fecha || '',
+    fecha: [fechaRojo, fechaAzul].filter(Boolean).join('\n'),
     horaInicio: horaInicio || '',
     horaFin: horaFin || '',
   };
@@ -744,32 +839,166 @@ export async function extraerDocumento(file) {
   if (!file) throw new Error('No se proporcionó ningún archivo.');
 
   try {
-    let pagina;
-    if (esPdf(file)) {
-      const pdfjs = await cargarPdfJs();
-      const buffer = await file.arrayBuffer();
-      const doc = await pdfjs.getDocument({ data: buffer }).promise;
-      const page = await doc.getPage(1);
-      pagina = await paginaACanvas(page);
-    } else {
-      pagina = await fuenteACanvas(file);
-    }
-
-    if (pagina.width > 1600) {
-      const f = 1600 / pagina.width;
-      const small = document.createElement('canvas');
-      small.width = Math.round(pagina.width * f);
-      small.height = Math.round(pagina.height * f);
-      small.getContext('2d').drawImage(pagina, 0, 0, small.width, small.height);
-      pagina = small;
-    }
-
+    const pagina = await cargarPaginaComoCanvas(file);
     console.log('[ocr-engine] Página:', pagina.width, 'x', pagina.height);
     return await extraerPorCapas(pagina);
   } catch (err) {
     console.error('[ocr-engine] falló:', err);
     throw err;
   }
+}
+
+/**
+ * Carga PDF (1ª pág.) o imagen a canvas (máx. 1600 px de ancho).
+ * Útil para vista previa + recorte manual.
+ */
+export async function cargarPaginaComoCanvas(file) {
+  if (!file) throw new Error('No se proporcionó ningún archivo.');
+
+  let pagina;
+  if (esPdf(file)) {
+    const pdfjs = await cargarPdfJs();
+    const buffer = await file.arrayBuffer();
+    const doc = await pdfjs.getDocument({ data: buffer }).promise;
+    const page = await doc.getPage(1);
+    pagina = await paginaACanvas(page);
+  } else {
+    pagina = await fuenteACanvas(file);
+  }
+
+  if (pagina.width > 1600) {
+    const f = 1600 / pagina.width;
+    const small = document.createElement('canvas');
+    small.width = Math.round(pagina.width * f);
+    small.height = Math.round(pagina.height * f);
+    small.getContext('2d').drawImage(pagina, 0, 0, small.width, small.height);
+    pagina = small;
+  }
+  return pagina;
+}
+
+/**
+ * OCR de un recorte manual asignado a un campo concreto.
+ * @param {HTMLCanvasElement} recorte
+ * @param {'titulo'|'fecha'|'horaInicio'|'horaFin'} campo
+ * @returns {Promise<string>} texto crudo de la capa
+ */
+export async function ocrRecorteManual(recorte, campo) {
+  if (!recorte?.width || !recorte?.height) return '';
+  await obtenerWorker();
+
+  const optsTitulo = {
+    psm: '6',
+    whitelist: null,
+    esTitulo: true,
+    dilatar: false,
+    suprimirCuadricula: false,
+  };
+  const optsFecha = {
+    psm: '7',
+    whitelist: WHITELIST_FECHA,
+    esFecha: true,
+    dilatar: true,
+    suprimirCuadricula: true,
+    modoLineas: 'hv',
+  };
+  const optsHora = {
+    psm: '7',
+    whitelist: WHITELIST_HORA,
+    esHora: true,
+    dilatar: true,
+    suprimirCuadricula: false,
+  };
+
+  const escalado = escalarCanvas(recorte, {
+    minWidth: ROI_MIN_WIDTH,
+    scaleExtra:
+      campo === 'horaInicio' || campo === 'horaFin' ? 1.5 : campo === 'titulo' ? 1.15 : 1,
+  });
+
+  async function porColor(predicados, opts, etiqueta) {
+    const lista = Array.isArray(predicados) ? predicados : [predicados];
+    const textos = [];
+    const area = escalado.width * escalado.height;
+    for (let i = 0; i < lista.length; i++) {
+      const mascara = crearMascaraColor(escalado, lista[i], {
+        dilatar: opts.dilatar !== false,
+        radio: opts.dilatar === false ? 0 : DILATE_RADIUS,
+      });
+      if (mascara.pixeles < MIN_PIXELES_OCR) continue;
+      if (mascara.pixeles > area * 0.45) continue;
+      let roi = recortarRoi(mascara.canvas, mascara.bbox, {
+        minWidth: ROI_MIN_WIDTH,
+        scaleExtra: opts.esHora ? 1.5 : 1,
+        pad: 10,
+        padBottom: 8,
+      });
+      if (!roi) roi = escalado;
+      const t = await reconocerRoi(roi, `${etiqueta}-${i}`, opts);
+      if (t) textos.push(t);
+    }
+    return textos.join('\n');
+  }
+
+  if (campo === 'titulo') {
+    let t = await porColor(PREDICADOS.titulo, optsTitulo, 'manual-titulo');
+    if (!t || t.replace(/\s/g, '').length < 3) {
+      t = await reconocerRoi(escalado, 'manual-titulo-libre', optsTitulo);
+    }
+    if (!t || t.replace(/\s/g, '').length < 3) {
+      const osc = await porColor(
+        PREDICADOS.tituloOscuro,
+        { ...optsTitulo, dilatar: true },
+        'manual-titulo-oscuro'
+      );
+      if (osc && osc.replace(/\s/g, '').length > (t || '').replace(/\s/g, '').length) {
+        t = osc;
+      }
+    }
+    return t || '';
+  }
+
+  if (campo === 'fecha') {
+    const rojo = await porColor(PREDICADOS.rojo, optsFecha, 'manual-fecha-rojo');
+    const azul = await porColor(PREDICADOS.azul, optsFecha, 'manual-fecha-azul');
+    let t = [rojo, azul].filter(Boolean).join('\n');
+    if (!t) t = await reconocerRoi(escalado, 'manual-fecha-libre', optsFecha);
+    return t || '';
+  }
+
+  if (campo === 'horaInicio') {
+    let t = await porColor(PREDICADOS.amarillo, optsHora, 'manual-hi');
+    if (!t) t = await reconocerRoi(escalado, 'manual-hi-libre', optsHora);
+    return t || '';
+  }
+
+  if (campo === 'horaFin') {
+    let t = await porColor(PREDICADOS.verde, optsHora, 'manual-hf');
+    if (!t) t = await reconocerRoi(escalado, 'manual-hf-libre', optsHora);
+    return t || '';
+  }
+
+  return '';
+}
+
+/**
+ * Recorta un rectángulo (coords de imagen) desde un canvas fuente.
+ */
+export function recortarCanvas(fuente, { x, y, w, h }) {
+  if (!fuente) return null;
+  const sx = Math.max(0, Math.floor(x));
+  const sy = Math.max(0, Math.floor(y));
+  const sw = Math.min(fuente.width - sx, Math.ceil(w));
+  const sh = Math.min(fuente.height - sy, Math.ceil(h));
+  if (sw < 4 || sh < 4) return null;
+  const out = document.createElement('canvas');
+  out.width = sw;
+  out.height = sh;
+  const ctx = out.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, sw, sh);
+  ctx.drawImage(fuente, sx, sy, sw, sh, 0, 0, sw, sh);
+  return out;
 }
 
 export async function extraerTexto(file) {

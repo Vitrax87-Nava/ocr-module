@@ -202,68 +202,6 @@
     .drop strong { color: var(--accent); }
     .drop input { display: none; }
 
-    .capture-row {
-      margin-top: 0.75rem;
-    }
-
-    .btn-camera {
-      appearance: none;
-      width: 100%;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 0.65rem;
-      border: 1px solid rgba(77, 141, 255, 0.45);
-      background: linear-gradient(180deg, rgba(77, 141, 255, 0.18), rgba(77, 141, 255, 0.08));
-      color: var(--text);
-      font: inherit;
-      font-size: 0.9rem;
-      font-weight: 600;
-      padding: 0.9rem 1.15rem;
-      border-radius: 12px;
-      cursor: pointer;
-      transition: border-color 0.15s, background 0.15s, box-shadow 0.15s, transform 0.12s;
-    }
-
-    .btn-camera:hover {
-      border-color: var(--accent);
-      background: var(--accent-dim);
-      box-shadow: 0 0 0 3px rgba(77, 141, 255, 0.15);
-    }
-
-    .btn-camera:active {
-      transform: translateY(1px);
-    }
-
-    .btn-camera svg {
-      width: 22px;
-      height: 22px;
-      flex-shrink: 0;
-      color: var(--accent);
-    }
-
-    .btn-camera .btn-camera-sub {
-      display: block;
-      font-size: 0.7rem;
-      font-weight: 500;
-      color: var(--muted);
-      margin-top: 0.12rem;
-    }
-
-    .btn-camera-text {
-      text-align: left;
-      line-height: 1.25;
-    }
-
-    #fileCamera {
-      position: absolute;
-      width: 1px;
-      height: 1px;
-      opacity: 0;
-      overflow: hidden;
-      clip: rect(0, 0, 0, 0);
-    }
-
     .drop-icon {
       width: 42px;
       height: 42px;
@@ -290,22 +228,287 @@
       min-height: 220px;
       display: grid;
       place-items: center;
-      overflow: hidden;
+      overflow: visible;
       position: relative;
+      user-select: none;
     }
 
     .preview-wrap.empty::after {
-      content: "Vista previa del archivo";
+      content: "Vista previa · arrastra un rectángulo para asignar un campo";
       color: var(--muted);
       font-size: 0.85rem;
+      text-align: center;
+      padding: 0 1rem;
+      pointer-events: none;
     }
 
-    .preview-wrap img,
-    .preview-wrap embed {
-      width: 100%;
-      max-height: 420px;
-      object-fit: contain;
+    .preview-stage {
+      position: relative;
+      display: none;
+      max-width: 100%;
+      line-height: 0;
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+    }
+
+    .preview-wrap.has-image {
+      overflow: visible;
+    }
+
+    .preview-wrap.has-image .preview-stage {
+      display: inline-block;
+    }
+
+    .preview-wrap.has-image.empty::after {
+      display: none;
+    }
+
+    #previewCanvas {
       display: block;
+      max-width: 100%;
+      max-height: 420px;
+      width: auto;
+      height: auto;
+      cursor: crosshair;
+      touch-action: none;
+    }
+
+    .select-layer {
+      position: absolute;
+      inset: 0;
+      z-index: 4;
+      cursor: crosshair;
+      touch-action: none;
+    }
+
+    .select-rect {
+      position: absolute;
+      border: 2px solid rgba(120, 190, 255, 0.95);
+      background: rgba(77, 141, 255, 0.18);
+      box-shadow:
+        0 0 0 1px rgba(11, 15, 20, 0.35),
+        0 0 16px rgba(77, 141, 255, 0.35);
+      pointer-events: none;
+      display: none;
+    }
+
+    .select-rect.visible {
+      display: block;
+    }
+
+    .assign-menu {
+      position: absolute;
+      z-index: 20;
+      display: none;
+      flex-direction: column;
+      gap: 0.35rem;
+      min-width: 188px;
+      padding: 0.45rem;
+      border-radius: 12px;
+      background: rgba(17, 24, 33, 0.96);
+      border: 1px solid var(--border);
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+      backdrop-filter: blur(10px);
+    }
+
+    .assign-menu.open {
+      display: flex;
+    }
+
+    .assign-menu .assign-title {
+      font-size: 0.68rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--muted);
+      padding: 0.25rem 0.4rem 0.35rem;
+    }
+
+    .assign-menu button {
+      appearance: none;
+      border: 1px solid transparent;
+      background: var(--surface-2);
+      color: var(--text);
+      font: inherit;
+      font-size: 0.82rem;
+      font-weight: 600;
+      text-align: left;
+      padding: 0.55rem 0.7rem;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background 0.12s, border-color 0.12s;
+    }
+
+    .assign-menu button:hover {
+      border-color: rgba(77, 141, 255, 0.45);
+      background: var(--accent-dim);
+    }
+
+    .assign-menu button:disabled {
+      opacity: 0.55;
+      cursor: wait;
+    }
+
+    .assign-menu .assign-cancel {
+      font-weight: 500;
+      color: var(--muted);
+      background: transparent;
+      border-color: var(--border-soft);
+    }
+
+    .crop-hint {
+      margin-top: 0.55rem;
+      font-size: 0.75rem;
+      color: var(--muted);
+      display: none;
+    }
+
+    .crop-hint.show {
+      display: block;
+    }
+
+    /* Overlay estilo Google Lens */
+    .scan-overlay {
+      position: absolute;
+      inset: 0;
+      z-index: 5;
+      pointer-events: none;
+      display: none;
+      background: linear-gradient(
+        180deg,
+        rgba(8, 14, 22, 0.15) 0%,
+        rgba(8, 14, 22, 0.35) 100%
+      );
+      overflow: hidden;
+    }
+
+    .preview-wrap.scanning .scan-overlay {
+      display: block;
+    }
+
+    .scan-overlay::before,
+    .scan-overlay::after {
+      content: "";
+      position: absolute;
+      width: 22px;
+      height: 22px;
+      border-color: var(--accent);
+      border-style: solid;
+      opacity: 0.9;
+    }
+
+    .scan-overlay::before {
+      top: 12px;
+      left: 12px;
+      border-width: 2.5px 0 0 2.5px;
+      border-radius: 4px 0 0 0;
+    }
+
+    .scan-overlay::after {
+      top: 12px;
+      right: 12px;
+      border-width: 2.5px 2.5px 0 0;
+      border-radius: 0 4px 0 0;
+    }
+
+    .scan-corners-bl,
+    .scan-corners-br {
+      position: absolute;
+      width: 22px;
+      height: 22px;
+      border-color: var(--accent);
+      border-style: solid;
+      opacity: 0.9;
+    }
+
+    .scan-corners-bl {
+      bottom: 12px;
+      left: 12px;
+      border-width: 0 0 2.5px 2.5px;
+      border-radius: 0 0 0 4px;
+    }
+
+    .scan-corners-br {
+      bottom: 12px;
+      right: 12px;
+      border-width: 0 2.5px 2.5px 0;
+      border-radius: 0 0 4px 0;
+    }
+
+    .scan-laser {
+      position: absolute;
+      left: 8%;
+      right: 8%;
+      height: 2px;
+      background: linear-gradient(
+        90deg,
+        transparent,
+        rgba(77, 141, 255, 0.15),
+        rgba(120, 190, 255, 0.95),
+        rgba(77, 141, 255, 0.15),
+        transparent
+      );
+      box-shadow:
+        0 0 12px 2px rgba(77, 141, 255, 0.55),
+        0 0 28px 6px rgba(77, 141, 255, 0.25);
+      animation: scan-laser 1.65s ease-in-out infinite;
+    }
+
+    .scan-laser::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: -28px;
+      height: 56px;
+      background: linear-gradient(
+        180deg,
+        transparent,
+        rgba(77, 141, 255, 0.12),
+        transparent
+      );
+    }
+
+    @keyframes scan-laser {
+      0% { top: 8%; opacity: 0.55; }
+      50% { opacity: 1; }
+      100% { top: 88%; opacity: 0.55; }
+    }
+
+    .scan-label {
+      position: absolute;
+      left: 50%;
+      bottom: 18px;
+      transform: translateX(-50%);
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.45rem 0.85rem;
+      border-radius: 999px;
+      background: rgba(11, 15, 20, 0.82);
+      border: 1px solid rgba(77, 141, 255, 0.35);
+      color: var(--text);
+      font-size: 0.8rem;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+      backdrop-filter: blur(8px);
+      white-space: nowrap;
+    }
+
+    .scan-label .pulse {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 0 0 rgba(77, 141, 255, 0.55);
+      animation: scan-pulse 1.2s ease-out infinite;
+    }
+
+    @keyframes scan-pulse {
+      0% { box-shadow: 0 0 0 0 rgba(77, 141, 255, 0.5); }
+      70% { box-shadow: 0 0 0 8px rgba(77, 141, 255, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(77, 141, 255, 0); }
     }
 
     .file-meta {
@@ -510,8 +713,8 @@
   <div class="shell">
     <header class="topbar">
       <div>
-        <h1>OCR Module — Prueba de portadas</h1>
-        <p class="sub">Sube un PDF o imagen de capacitación y revisa los campos extraídos.</p>
+        <h1>OCR Module — Escáner de portadas</h1>
+        <p class="sub">Arrastra o selecciona un archivo. Extracción automática por zonas al instante.</p>
       </div>
       <span class="badge idle" id="badge">En espera</span>
     </header>
@@ -533,38 +736,39 @@
             <input type="file" id="file" accept="application/pdf,image/*" />
             <div class="drop-icon" aria-hidden="true">⬆</div>
             <div>Arrastra un archivo o <strong>selecciónalo</strong></div>
-            <div class="hint">PDF · PNG · JPG · WEBP</div>
+            <div class="hint">PDF · PNG · JPG · WEBP — el OCR arranca solo</div>
           </label>
-
-          <div class="capture-row">
-            <!-- capture=environment → cámara trasera en móviles -->
-            <input
-              type="file"
-              id="fileCamera"
-              accept="image/*"
-              capture="environment"
-            />
-            <button type="button" class="btn-camera" id="btnCamera" title="Abrir cámara trasera / webcam">
-              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                <path
-                  d="M9 7l1.2-2.2A1.5 1.5 0 0111.5 4h1a1.5 1.5 0 011.3.8L15 7h3.5A2.5 2.5 0 0121 9.5v8A2.5 2.5 0 0118.5 20h-13A2.5 2.5 0 013 17.5v-8A2.5 2.5 0 015.5 7H9z"
-                  stroke="currentColor"
-                  stroke-width="1.7"
-                  stroke-linejoin="round"
-                />
-                <circle cx="12" cy="13" r="3.4" stroke="currentColor" stroke-width="1.7" />
-                <circle cx="17.4" cy="10.2" r="0.9" fill="currentColor" />
-              </svg>
-              <span class="btn-camera-text">
-                Escanear con cámara
-                <span class="btn-camera-sub">Tomar foto de la portada</span>
-              </span>
-            </button>
-          </div>
 
           <p class="file-meta" id="fileMeta"></p>
 
-          <div class="preview-wrap empty" id="preview"></div>
+          <div class="preview-wrap empty" id="preview">
+            <div class="preview-stage" id="previewStage">
+              <canvas id="previewCanvas" width="1" height="1" aria-label="Vista previa para recorte"></canvas>
+              <div class="select-layer" id="selectLayer" aria-hidden="true">
+                <div class="select-rect" id="selectRect"></div>
+              </div>
+              <div class="assign-menu" id="assignMenu" role="menu" aria-label="Asignar recorte">
+                <div class="assign-title">Asignar recorte a</div>
+                <button type="button" data-campo="titulo">Asignar a Título</button>
+                <button type="button" data-campo="fecha">Asignar a Fecha</button>
+                <button type="button" data-campo="horaInicio">Asignar a Hora Inicio</button>
+                <button type="button" data-campo="horaFin">Asignar a Hora Fin</button>
+                <button type="button" class="assign-cancel" data-cancel="1">Cancelar</button>
+              </div>
+            </div>
+            <div class="scan-overlay" id="scanOverlay" aria-hidden="true">
+              <div class="scan-corners-bl" aria-hidden="true"></div>
+              <div class="scan-corners-br" aria-hidden="true"></div>
+              <div class="scan-laser" aria-hidden="true"></div>
+              <div class="scan-label">
+                <span class="pulse" aria-hidden="true"></span>
+                Analizando imagen…
+              </div>
+            </div>
+          </div>
+          <p class="crop-hint" id="cropHint">
+            Arrastra un rectángulo sobre la imagen y asígnalo a Título, Fecha u Horas.
+          </p>
 
           <p class="status-line" id="status"></p>
         </div>
@@ -580,7 +784,7 @@
             <div class="field">
               <label for="fTitulo">Título de la capacitación</label>
               <input id="fTitulo" type="text" autocomplete="off" placeholder="Escribe o corrige el título…" />
-              <p class="field-hint">Editable: corrige a mano si el OCR falla.</p>
+              <p class="field-hint">Editable en todo momento · alimenta el nombre sugerido.</p>
             </div>
 
             <div class="field">
@@ -589,16 +793,17 @@
               <div class="fecha-stack" style="margin-top:0.55rem">
                 <div class="fecha-chip">Fecha IxT: <strong id="fFechaTxt">—</strong></div>
               </div>
+              <p class="field-hint">Editable · al cambiarla se recalcula el nombre sugerido.</p>
             </div>
 
             <div class="row-2">
               <div class="field">
-                <label for="fHoraInicio">Hora inicio</label>
-                <input id="fHoraInicio" type="text" autocomplete="off" placeholder="HH:MM hrs" />
+                <label for="fHoraInicio">Hora Inicio</label>
+                <input id="fHoraInicio" type="text" autocomplete="off" placeholder="HH:mm" />
               </div>
               <div class="field">
-                <label for="fHoraFin">Hora fin</label>
-                <input id="fHoraFin" type="text" autocomplete="off" placeholder="HH:MM hrs" />
+                <label for="fHoraFin">Hora Fin</label>
+                <input id="fHoraFin" type="text" autocomplete="off" placeholder="HH:mm" />
               </div>
             </div>
 
@@ -608,7 +813,14 @@
                 <input id="fNombre" type="text" autocomplete="off" placeholder="Se actualiza con título + fecha…" />
                 <button type="button" class="btn-copy" id="btnCopy">Copiar</button>
               </div>
-              <p class="field-hint">Se recalcula al editar el título o la fecha; también puedes ajustarlo a mano.</p>
+              <p class="field-hint">Se actualiza en tiempo real al editar Título o Fecha; también puedes ajustarlo a mano.</p>
+            </div>
+
+            <div class="field" id="gasActions" hidden>
+              <button type="button" class="btn-copy" id="btnGas" style="width:100%;padding:0.75rem 1rem">
+                Enviar metadatos a Apps Script
+              </button>
+              <p class="field-hint">Disponible dentro de Google Apps Script (Code.gs → aplicarMetadatosOcr).</p>
             </div>
           </form>
         </div>
@@ -638,7 +850,14 @@
   </div>
 
   <script type="module">
-    import { procesarDocumento } from './index.js';
+    import {
+      procesarDocumento,
+      procesarRecorte,
+      precalentarMotor,
+      cargarPaginaComoCanvas,
+      recortarCanvas,
+      payloadDesdeFormulario,
+    } from './index.js';
     import {
       construirNombreSugerido,
       formatearFechaTxt,
@@ -646,16 +865,28 @@
 
     const drop = document.getElementById('drop');
     const input = document.getElementById('file');
-    const fileCamera = document.getElementById('fileCamera');
-    const btnCamera = document.getElementById('btnCamera');
     const status = document.getElementById('status');
     const badge = document.getElementById('badge');
     const preview = document.getElementById('preview');
+    const previewStage = document.getElementById('previewStage');
+    const previewCanvas = document.getElementById('previewCanvas');
+    const selectLayer = document.getElementById('selectLayer');
+    const selectRect = document.getElementById('selectRect');
+    const assignMenu = document.getElementById('assignMenu');
+    const cropHint = document.getElementById('cropHint');
+    const scanOverlay = document.getElementById('scanOverlay');
     const fileMeta = document.getElementById('fileMeta');
     const resumen = document.getElementById('resumen');
     const out = document.getElementById('out');
     const raw = document.getElementById('raw');
     const btnCopy = document.getElementById('btnCopy');
+    const gasActions = document.getElementById('gasActions');
+    const btnGas = document.getElementById('btnGas');
+
+    // Mostrar acción GAS solo dentro de HtmlService
+    if (typeof google !== 'undefined' && google?.script?.run) {
+      gasActions.hidden = false;
+    }
 
     const fTitulo = document.getElementById('fTitulo');
     const fFecha = document.getElementById('fFecha');
@@ -664,9 +895,31 @@
     const fHoraFin = document.getElementById('fHoraFin');
     const fNombre = document.getElementById('fNombre');
 
-    let previewUrl = null;
-    /** Evita que un OCR en curso pise ediciones manuales posteriores. */
+    const CAMPOS_INPUT = {
+      titulo: fTitulo,
+      fecha: fFecha,
+      horaInicio: fHoraInicio,
+      horaFin: fHoraFin,
+    };
+
+    const SCAN_MIN_MS = 1900;
+    const MIN_SELECT_PX = 12;
+
+    /** Canvas a resolución de trabajo (misma que OCR). */
+    let paginaCanvas = null;
     let generacionOcr = 0;
+    let asignando = false;
+
+    const seleccion = {
+      activa: false,
+      startX: 0,
+      startY: 0,
+      x: 0,
+      y: 0,
+      w: 0,
+      h: 0,
+      lista: false,
+    };
 
     function setStatus(msg, cls = '') {
       status.textContent = msg;
@@ -685,7 +938,20 @@
       return s;
     }
 
-    /** Actualiza nombre sugerido e IxT a partir del título/fecha actuales. */
+    function iniciarEscaneoVisual() {
+      preview.classList.add('scanning');
+      scanOverlay.setAttribute('aria-hidden', 'false');
+    }
+
+    function detenerEscaneoVisual() {
+      preview.classList.remove('scanning');
+      scanOverlay.setAttribute('aria-hidden', 'true');
+    }
+
+    function esperar(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
     function sincronizarNombreYFechaTxt() {
       const titulo = valorCampo(fTitulo.value);
       const fecha = valorCampo(fFecha.value);
@@ -703,13 +969,11 @@
     }
 
     function llenarFormulario(datos = {}) {
-      // Vacío si OCR falló: el usuario puede completar a mano
       fTitulo.value = valorCampo(datos.titulo);
       fFecha.value = valorCampo(datos.fecha);
       fHoraInicio.value = valorCampo(datos.horaInicio);
       fHoraFin.value = valorCampo(datos.horaFin);
       sincronizarNombreYFechaTxt();
-      // Preferir nombre del OCR si coincide; si no, el dinámico ya quedó
       const sugeridoOcr = valorCampo(datos.nombreSugerido);
       if (sugeridoOcr) fNombre.value = sugeridoOcr;
       const ixT = valorCampo(datos.fechaTxt);
@@ -721,33 +985,198 @@
     fTitulo.addEventListener('change', sincronizarNombreYFechaTxt);
     fFecha.addEventListener('change', sincronizarNombreYFechaTxt);
 
-    function mostrarPreview(file) {
-      if (previewUrl) {
-        URL.revokeObjectURL(previewUrl);
-        previewUrl = null;
-      }
-      preview.innerHTML = '';
-      preview.classList.remove('empty');
+    function cerrarMenuAsignacion() {
+      assignMenu.classList.remove('open');
+      selectRect.classList.remove('visible');
+      seleccion.lista = false;
+      seleccion.w = 0;
+      seleccion.h = 0;
+    }
 
+    function pintarPaginaEnPreview(canvas) {
+      paginaCanvas = canvas;
+      previewCanvas.width = canvas.width;
+      previewCanvas.height = canvas.height;
+      previewCanvas.getContext('2d').drawImage(canvas, 0, 0);
+      preview.classList.remove('empty');
+      preview.classList.add('has-image');
+      cropHint.classList.add('show');
+      cerrarMenuAsignacion();
+    }
+
+    function coordsEnCanvas(clientX, clientY) {
+      const rect = previewCanvas.getBoundingClientRect();
+      if (rect.width < 1 || rect.height < 1) return null;
+      const x = ((clientX - rect.left) / rect.width) * previewCanvas.width;
+      const y = ((clientY - rect.top) / rect.height) * previewCanvas.height;
+      return {
+        x: Math.max(0, Math.min(previewCanvas.width, x)),
+        y: Math.max(0, Math.min(previewCanvas.height, y)),
+      };
+    }
+
+    function actualizarRectVisual() {
+      const rect = previewCanvas.getBoundingClientRect();
+      const sx = rect.width / previewCanvas.width;
+      const sy = rect.height / previewCanvas.height;
+      selectRect.style.left = `${seleccion.x * sx}px`;
+      selectRect.style.top = `${seleccion.y * sy}px`;
+      selectRect.style.width = `${Math.max(0, seleccion.w) * sx}px`;
+      selectRect.style.height = `${Math.max(0, seleccion.h) * sy}px`;
+      selectRect.classList.toggle(
+        'visible',
+        seleccion.w >= MIN_SELECT_PX && seleccion.h >= MIN_SELECT_PX
+      );
+    }
+
+    function abrirMenuAsignacion(clientX, clientY) {
+      const stageRect = previewStage.getBoundingClientRect();
+      let left = clientX - stageRect.left + 8;
+      let top = clientY - stageRect.top + 8;
+      assignMenu.classList.add('open');
+      // Medir y ajustar para no salirse del stage
+      const menuW = assignMenu.offsetWidth || 200;
+      const menuH = assignMenu.offsetHeight || 220;
+      if (left + menuW > stageRect.width) left = Math.max(4, stageRect.width - menuW - 4);
+      if (top + menuH > stageRect.height) top = Math.max(4, stageRect.height - menuH - 4);
+      assignMenu.style.left = `${left}px`;
+      assignMenu.style.top = `${top}px`;
+      seleccion.lista = true;
+    }
+
+    selectLayer.addEventListener('pointerdown', (e) => {
+      if (!paginaCanvas || asignando || preview.classList.contains('scanning')) return;
+      if (e.button != null && e.button !== 0) return;
+      const p = coordsEnCanvas(e.clientX, e.clientY);
+      if (!p) return;
+      e.preventDefault();
+      selectLayer.setPointerCapture(e.pointerId);
+      cerrarMenuAsignacion();
+      seleccion.activa = true;
+      seleccion.startX = p.x;
+      seleccion.startY = p.y;
+      seleccion.x = p.x;
+      seleccion.y = p.y;
+      seleccion.w = 0;
+      seleccion.h = 0;
+      actualizarRectVisual();
+    });
+
+    selectLayer.addEventListener('pointermove', (e) => {
+      if (!seleccion.activa) return;
+      const p = coordsEnCanvas(e.clientX, e.clientY);
+      if (!p) return;
+      const x0 = Math.min(seleccion.startX, p.x);
+      const y0 = Math.min(seleccion.startY, p.y);
+      const x1 = Math.max(seleccion.startX, p.x);
+      const y1 = Math.max(seleccion.startY, p.y);
+      seleccion.x = x0;
+      seleccion.y = y0;
+      seleccion.w = x1 - x0;
+      seleccion.h = y1 - y0;
+      actualizarRectVisual();
+    });
+
+    function finalizarSeleccion(e) {
+      if (!seleccion.activa) return;
+      seleccion.activa = false;
+      try {
+        selectLayer.releasePointerCapture(e.pointerId);
+      } catch {
+        /* ignore */
+      }
+      if (seleccion.w < MIN_SELECT_PX || seleccion.h < MIN_SELECT_PX) {
+        cerrarMenuAsignacion();
+        return;
+      }
+      actualizarRectVisual();
+      abrirMenuAsignacion(e.clientX, e.clientY);
+    }
+
+    selectLayer.addEventListener('pointerup', finalizarSeleccion);
+    selectLayer.addEventListener('pointercancel', () => {
+      seleccion.activa = false;
+      cerrarMenuAsignacion();
+    });
+
+    assignMenu.addEventListener('click', async (e) => {
+      const btn = e.target.closest('button');
+      if (!btn) return;
+      if (btn.dataset.cancel) {
+        cerrarMenuAsignacion();
+        return;
+      }
+      const campo = btn.dataset.campo;
+      if (!campo || !paginaCanvas || asignando) return;
+
+      const recorte = recortarCanvas(paginaCanvas, {
+        x: seleccion.x,
+        y: seleccion.y,
+        w: seleccion.w,
+        h: seleccion.h,
+      });
+      if (!recorte) {
+        setStatus('Recorte demasiado pequeño.', 'err');
+        cerrarMenuAsignacion();
+        return;
+      }
+
+      asignando = true;
+      assignMenu.querySelectorAll('button').forEach((b) => {
+        b.disabled = true;
+      });
+      setBadge('busy', 'Recorte…');
+      setStatus(`Analizando recorte → ${campo}…`, 'busy');
+
+      try {
+        const res = await procesarRecorte(recorte, campo);
+        const inputEl = CAMPOS_INPUT[campo];
+        if (res.exito && res.valor) {
+          inputEl.value = res.valor;
+          if (campo === 'titulo' || campo === 'fecha') sincronizarNombreYFechaTxt();
+          setBadge('ok', 'Campo actualizado');
+          setStatus(`Asignado a ${campo}: «${res.valor}»`, 'ok');
+        } else if (res.exito && res.rawText) {
+          // Fallback: mostrar crudo si el parser no normalizó
+          inputEl.value = res.rawText;
+          if (campo === 'titulo' || campo === 'fecha') sincronizarNombreYFechaTxt();
+          setBadge('ok', 'Campo actualizado');
+          setStatus(`Asignado texto OCR a ${campo} (revisa el formato).`, 'ok');
+        } else {
+          setBadge('err', 'Sin texto');
+          setStatus(
+            res.error || 'No se pudo leer el recorte. Prueba otra zona o edita a mano.',
+            'err'
+          );
+        }
+      } catch (err) {
+        setBadge('err', 'Error');
+        setStatus('Error en recorte: ' + (err.message || err), 'err');
+      } finally {
+        asignando = false;
+        assignMenu.querySelectorAll('button').forEach((b) => {
+          b.disabled = false;
+        });
+        cerrarMenuAsignacion();
+      }
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') cerrarMenuAsignacion();
+    });
+
+    async function mostrarPreviewDesdeArchivo(file) {
       const sizeKb = Math.max(1, Math.round(file.size / 1024));
       fileMeta.textContent = `${file.name} · ${sizeKb} KB`;
       fileMeta.classList.add('show');
-
-      previewUrl = URL.createObjectURL(file);
-      const esPdf =
-        (file.type || '').includes('pdf') ||
-        String(file.name || '').toLowerCase().endsWith('.pdf');
-
-      if (esPdf) {
-        const embed = document.createElement('embed');
-        embed.src = previewUrl;
-        embed.type = 'application/pdf';
-        preview.appendChild(embed);
-      } else {
-        const img = document.createElement('img');
-        img.src = previewUrl;
-        img.alt = 'Vista previa';
-        preview.appendChild(img);
+      try {
+        const canvas = await cargarPaginaComoCanvas(file);
+        pintarPaginaEnPreview(canvas);
+      } catch (err) {
+        preview.classList.add('empty');
+        preview.classList.remove('has-image');
+        cropHint.classList.remove('show');
+        throw err;
       }
     }
 
@@ -755,17 +1184,31 @@
       if (!file) return;
 
       const gen = ++generacionOcr;
-      mostrarPreview(file);
-      setBadge('busy', 'Procesando…');
-      setStatus(`Procesando «${file.name}»…`, 'busy');
+      cerrarMenuAsignacion();
+      setBadge('busy', 'Analizando…');
+      setStatus('Analizando imagen…', 'busy');
       limpiarFormulario();
       resumen.textContent = '—';
       out.textContent = '{}';
       raw.textContent = '—';
 
-      // Campos siguen editables durante el OCR (no se bloquean)
-      const resultado = await procesarDocumento(file);
+      try {
+        await mostrarPreviewDesdeArchivo(file);
+      } catch (err) {
+        setBadge('err', 'Error');
+        setStatus('No se pudo cargar la vista previa: ' + (err.message || err), 'err');
+        return;
+      }
+
+      iniciarEscaneoVisual();
+
+      const [resultado] = await Promise.all([
+        procesarDocumento(file),
+        esperar(SCAN_MIN_MS),
+      ]);
+
       if (gen !== generacionOcr) return;
+      detenerEscaneoVisual();
 
       console.log('[ocr-module] resultado:', resultado);
 
@@ -781,17 +1224,20 @@
           .filter((k) => !valorCampo(d[k]));
         if (faltan.length) {
           setStatus(
-            'Extracción parcial: completa a mano los campos vacíos.',
+            'Extracción parcial: arrastra un recorte o completa a mano.',
             'ok'
           );
         } else {
-          setStatus('Extracción completada. Puedes corregir cualquier campo.', 'ok');
+          setStatus(
+            'Listo. Puedes corregir campos o asignar zonas con el cursor.',
+            'ok'
+          );
         }
       } else {
         setBadge('err', 'Error de extracción');
         setStatus(
           'Error: ' + (resultado.error || 'desconocido') +
-            ' — puedes llenar los campos manualmente.',
+            ' — usa el recorte manual o edita los campos.',
           'err'
         );
       }
@@ -805,35 +1251,12 @@
     drop.addEventListener('drop', (e) => {
       e.preventDefault();
       drop.classList.remove('over');
-      const file = e.dataTransfer?.files?.[0];
-      procesar(file);
+      procesar(e.dataTransfer?.files?.[0]);
     });
 
     input.addEventListener('change', () => {
       procesar(input.files?.[0]);
       input.value = '';
-    });
-
-    // Cámara / Lens: abre capture=environment y dispara OCR al instante
-    btnCamera.addEventListener('click', () => {
-      fileCamera.value = '';
-      fileCamera.click();
-    });
-
-    fileCamera.addEventListener('change', () => {
-      const file = fileCamera.files?.[0];
-      if (!file) return;
-      // Renombrar de forma legible si el SO no da nombre útil
-      const nombre =
-        file.name && file.name !== 'image.jpg'
-          ? file.name
-          : `captura-portada-${Date.now()}.jpg`;
-      const archivo =
-        file.name === nombre
-          ? file
-          : new File([file], nombre, { type: file.type || 'image/jpeg' });
-      procesar(archivo);
-      fileCamera.value = '';
     });
 
     document.getElementById('btnFixture').addEventListener('click', async () => {
@@ -846,6 +1269,7 @@
         const file = new File([blob], 'portada-muestra.png', { type: 'image/png' });
         await procesar(file);
       } catch (err) {
+        detenerEscaneoVisual();
         setBadge('err', 'Error');
         setStatus('Error fixture: ' + (err.message || err), 'err');
       }
@@ -866,6 +1290,40 @@
         btnCopy.textContent = 'Error';
       }
     });
+
+    btnGas?.addEventListener('click', () => {
+      if (typeof google === 'undefined' || !google?.script?.run) {
+        setStatus('Apps Script no disponible en este contexto.', 'err');
+        return;
+      }
+      const payload = payloadDesdeFormulario({
+        titulo: fTitulo.value,
+        fecha: fFecha.value,
+        horaInicio: fHoraInicio.value,
+        horaFin: fHoraFin.value,
+        nombreSugerido: fNombre.value,
+      });
+      setBadge('busy', 'Enviando…');
+      setStatus('Enviando metadatos a Code.gs…', 'busy');
+      google.script.run
+        .withSuccessHandler((res) => {
+          setBadge('ok', 'GAS OK');
+          setStatus(
+            res?.ok
+              ? 'Metadatos aplicados en Apps Script.'
+              : 'GAS respondió con avisos: ' + (res?.errores || []).join('; '),
+            res?.ok ? 'ok' : 'err'
+          );
+          console.log('[gas] aplicarMetadatosOcr →', res);
+        })
+        .withFailureHandler((err) => {
+          setBadge('err', 'GAS error');
+          setStatus('Error Apps Script: ' + (err?.message || err), 'err');
+        })
+        .aplicarMetadatosOcr(payload, {});
+    });
+
+    precalentarMotor().catch(() => {});
   </script>
 </body>
 </html>

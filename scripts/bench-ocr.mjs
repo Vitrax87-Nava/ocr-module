@@ -1,5 +1,5 @@
 /**
- * scripts/bench-ocr.mjs — OCR real con ROI fijas (espejo de ocr-engine.js).
+ * scripts/bench-ocr.mjs — OCR real (espejo de ocr-engine.js: zonas / regex / laterales).
  */
 import { createWorker } from 'tesseract.js';
 import { Jimp } from 'jimp';
@@ -11,13 +11,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const IMG = path.join(__dirname, '../fixtures/portada-muestra.png');
 const MIN_PIX = 25;
 const TH = 128;
-const WL = '0123456789:-/ ';
+const WL_FECHA = '0123456789-/';
+const WL_HORA = '0123456789:';
 
 const ROI_FIJAS = {
-  titulo: { x0: 0, y0: 0, x1: 1, y1: 0.55 },
-  fecha: { x0: 0.05, y0: 0.55, x1: 0.72, y1: 0.88 },
-  horaInicio: { x0: 0, y0: 0.78, x1: 0.38, y1: 1 },
-  horaFin: { x0: 0.48, y0: 0.76, x1: 1, y1: 1 },
+  titulo: { x0: 0, y0: 0, x1: 1, y1: 0.72 },
+  fecha: { x0: 0.2, y0: 0.55, x1: 0.75, y1: 0.9 },
+  horaInicio: { x0: 0, y0: 0.72, x1: 0.4, y1: 1 },
+  horaFin: { x0: 0.48, y0: 0.72, x1: 1, y1: 1 },
 };
 
 function rgbAHsv(r, g, b) {
@@ -37,8 +38,8 @@ function rgbAHsv(r, g, b) {
 const PRED = {
   titulo: (hsv, r, g, b) => {
     const lum = 0.299 * r + 0.587 * g + 0.114 * b;
-    const neutro = Math.max(Math.abs(r - g), Math.abs(g - b), Math.abs(r - b)) < 40;
-    return lum >= 200 && hsv.s <= 0.25 && neutro;
+    const neutro = Math.max(Math.abs(r - g), Math.abs(g - b), Math.abs(r - b)) < 45;
+    return lum >= 170 && hsv.s <= 0.35 && neutro;
   },
   tituloOscuro: (hsv, r, g, b) => {
     const lum = 0.299 * r + 0.587 * g + 0.114 * b;
@@ -87,19 +88,16 @@ function opening(ink, w, h, kw, kh) {
   return morphK(morphK(ink, w, h, 'erode', kw, kh), w, h, 'dilate', kw, kh);
 }
 
-function cropRegion(img, region) {
+/** Máscara de color ∩ ROI (sobre página completa). */
+function mascaraEnRegion(img, region, pred, dilatar = true) {
   const w = img.bitmap.width, h = img.bitmap.height;
-  const x = Math.max(0, Math.floor(region.x0 * w));
-  const y = Math.max(0, Math.floor(region.y0 * h));
-  const cw = Math.min(w - x, Math.ceil(region.x1 * w) - x);
-  const ch = Math.min(h - y, Math.ceil(region.y1 * h) - y);
-  return img.clone().crop({ x, y, w: cw, h: ch });
-}
-
-function mascara(img, pred, dilatar = true) {
-  const w = img.bitmap.width, h = img.bitmap.height;
+  const x0 = Math.max(0, Math.floor(region.x0 * w));
+  const y0 = Math.max(0, Math.floor(region.y0 * h));
+  const x1 = Math.min(w, Math.ceil(region.x1 * w));
+  const y1 = Math.min(h, Math.ceil(region.y1 * h));
   const ink = new Uint8Array(w * h);
   img.scan(0, 0, w, h, function (x, y, idx) {
+    if (x < x0 || x >= x1 || y < y0 || y >= y1) return;
     const r = this.bitmap.data[idx], g = this.bitmap.data[idx + 1], b = this.bitmap.data[idx + 2];
     if (pred(rgbAHsv(r, g, b), r, g, b)) ink[y * w + x] = 1;
   });
@@ -122,17 +120,20 @@ function mascara(img, pred, dilatar = true) {
       if (y > maxY) maxY = y;
     }
   });
-  return { img: out, pixeles, bbox: pixeles ? { minX, minY, maxX, maxY } : null };
+  const area = (x1 - x0) * (y1 - y0);
+  return { img: out, pixeles, bbox: pixeles ? { minX, minY, maxX, maxY } : null, area };
 }
 
 async function preparar(roi, suprimir = false) {
   const w = roi.bitmap.width, h = roi.bitmap.height;
   const ink = new Uint8Array(w * h);
+  let pixBinarios = 0;
   roi.scan(0, 0, w, h, function (x, y, idx) {
     const gray =
       0.299 * this.bitmap.data[idx] +
       0.587 * this.bitmap.data[idx + 1] +
       0.114 * this.bitmap.data[idx + 2];
+    if (gray < 10 || gray > 245) pixBinarios++;
     ink[y * w + x] = gray < TH ? 1 : 0;
   });
 
@@ -147,14 +148,18 @@ async function preparar(roi, suprimir = false) {
       mapa[i] = ink[i] && !(hLines[i] || vLines[i]) ? 1 : 0;
     }
     mapa = morphK(mapa, w, h, 'dilate', 3, 3);
-  } else {
-    mapa = morphK(ink, w, h, 'dilate', 3, 3);
+  } else if (pixBinarios / (w * h) <= 0.92) {
+    mapa = morphK(ink, w, h, 'dilate', 2, 2);
   }
 
   let tinta = 0;
   for (const v of mapa) if (v) tinta++;
   if (tinta > mapa.length * 0.55) {
     for (let i = 0; i < mapa.length; i++) mapa[i] = mapa[i] ? 0 : 1;
+  }
+
+  if (!suprimir && pixBinarios / (w * h) > 0.92 && tinta <= mapa.length * 0.55) {
+    return roi;
   }
 
   const out = roi.clone();
@@ -167,13 +172,12 @@ async function preparar(roi, suprimir = false) {
   return out;
 }
 
-async function cropBbox(img, bbox, scaleExtra = 1) {
+async function cropBbox(img, bbox, { scaleExtra = 1, pad = 12, padBottom = 8 } = {}) {
   if (!bbox) return null;
-  const pad = 8;
   const x = Math.max(0, bbox.minX - pad);
   const y = Math.max(0, bbox.minY - pad);
   const w = Math.min(img.bitmap.width - x, bbox.maxX - bbox.minX + 1 + pad * 2);
-  const h = Math.min(img.bitmap.height - y, bbox.maxY - bbox.minY + 1 + pad * 2);
+  const h = Math.min(img.bitmap.height - y, bbox.maxY - bbox.minY + 1 + pad + padBottom);
   let roi = img.clone().crop({ x, y, w, h });
   const targetW = Math.round(360 * scaleExtra);
   if (roi.bitmap.width < targetW) {
@@ -186,32 +190,44 @@ async function cropBbox(img, bbox, scaleExtra = 1) {
   return roi;
 }
 
-function sanitizarNum(t) {
-  return String(t || '')
+function sanitizarNum(t, soloHora = false) {
+  let s = String(t || '')
     .replace(/[OoD]/g, '0')
     .replace(/[Il|]/g, '1')
     .replace(/[Zz]/g, '2')
     .replace(/[¢©]/g, '6')
-    .replace(/[£]/g, '1')
+    .replace(/[£]/g, '1');
+  if (soloHora) {
+    return s.replace(/[^0-9:]/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+  return s
     .replace(/[^0-9:\-/\s\n]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
+function limpiarTituloOcr(texto) {
+  let t = String(texto || '').trim();
+  t = t.split('\n').map((l) => l.trim()).find(Boolean) || t;
+  t = t.replace(/[,.;:_=\-|~'"“”‘’•·]+/g, ' ');
+  t = t.replace(/^[^A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9]+/u, '');
+  t = t.replace(/[^A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9]+$/u, '');
+  return t.replace(/\s+/g, ' ').trim();
+}
+
 function pareceUtil(texto, tipo) {
   const t = String(texto || '');
-  if (tipo === 'fecha') return /\d{1,2}\s*[-/.:]\s*\d{1,2}\s*[-/.:]\s*\d{2,4}/.test(t);
+  if (tipo === 'fecha') {
+    return /\d{1,2}\s*[-/.:]\s*\d{1,2}\s*[-/.:]\s*\d{2,4}/.test(t) ||
+      /\d{2,}/.test(t);
+  }
   if (tipo === 'hora') {
     return /\d{1,2}\s*[:.]\s*\d{2}/.test(t) ||
       /\b([01]\d|2[0-3])[0-5]\d\b/.test(t) ||
-      /\b([01]?\d|2[0-3])\s+[0-5]\d\b/.test(t);
+      /\b([01]?\d|2[0-3])\s+[0-5]\d\b/.test(t) ||
+      /\d{3,4}/.test(t);
   }
   return t.trim().length > 0;
-}
-
-function pareceFecha(texto) {
-  return /\d{1,2}\s*[-/.:]\s*\d{1,2}\s*[-/.:]\s*\d{2,4}/.test(texto) ||
-    /\d{1,2}\s*[-/.:]\s*\d{1,2}/.test(texto);
 }
 
 async function ocrRegion(worker, img, name, pred, opts = {}) {
@@ -220,22 +236,34 @@ async function ocrRegion(worker, img, name, pred, opts = {}) {
     whitelist = null,
     dilatar = true,
     esHora = false,
+    esTitulo = false,
     suprimir = false,
+    recortarInferior = false,
   } = opts;
-  const zona = cropRegion(img, ROI_FIJAS[name]);
-  const m = mascara(zona, pred, dilatar);
-  const area = zona.bitmap.width * zona.bitmap.height;
+  const region = ROI_FIJAS[name];
+  const m = mascaraEnRegion(img, region, pred, dilatar);
   console.log(name, 'px', m.pixeles);
   if (m.pixeles < MIN_PIX) return '';
-  if (m.pixeles > area * 0.35) {
+  if (m.pixeles > m.area * 0.35) {
     console.log(name, 'omitida por ruido de fondo');
     return '';
   }
 
-  let roi = await cropBbox(m.img, m.bbox, esHora ? 1.4 : 1);
+  let bbox = m.bbox;
+  if (recortarInferior && bbox) {
+    const alto = bbox.maxY - bbox.minY + 1;
+    const cut = bbox.minY + Math.floor(alto * 0.3);
+    bbox = { ...bbox, minY: Math.min(bbox.maxY - 4, Math.max(bbox.minY, cut)) };
+  }
+
+  let roi = await cropBbox(m.img, bbox, {
+    scaleExtra: esHora ? 1.5 : esTitulo ? 1.15 : 1,
+    pad: esTitulo ? 20 : 12,
+    padBottom: esTitulo ? 36 : 8,
+  });
   if (!roi) roi = m.img;
   roi = await preparar(roi, suprimir);
-  const tipo = whitelist ? (esHora ? 'hora' : 'fecha') : 'titulo';
+  const tipo = esTitulo ? 'titulo' : esHora ? 'hora' : 'fecha';
 
   if (whitelist) {
     await worker.setParameters({
@@ -243,10 +271,10 @@ async function ocrRegion(worker, img, name, pred, opts = {}) {
       tessedit_char_whitelist: whitelist,
     });
     let { data } = await worker.recognize(await roi.getBuffer('image/png'));
-    const t1 = sanitizarNum(data.text || '');
+    const t1 = sanitizarNum(data.text || '', esHora);
 
     await worker.setParameters({
-      tessedit_pageseg_mode: '6',
+      tessedit_pageseg_mode: esHora ? '7' : '6',
       tessedit_char_whitelist: '',
     });
     ({ data } = await worker.recognize(await roi.getBuffer('image/png')));
@@ -254,9 +282,10 @@ async function ocrRegion(worker, img, name, pred, opts = {}) {
     if (esHora) {
       raw = raw
         .replace(/\b([01]?\d|2[0-3])\s*[sS]([0-5]\d)\b/g, '$1:3$2')
-        .replace(/\b([01]?\d|2[0-3])\s*[sS][0Oo]\b/g, '$1:30');
+        .replace(/\b([01]?\d|2[0-3])\s*[sS][0Oo]\b/g, '$1:30')
+        .replace(/\b([01]?\d|2[0-3])\s*[OoD]{1,2}[A-Za-z]*\b/g, '$1:00');
     }
-    const t2 = sanitizarNum(raw);
+    const t2 = sanitizarNum(raw, esHora);
 
     const score = (t) => {
       if (!pareceUtil(t, tipo)) return -1;
@@ -271,6 +300,7 @@ async function ocrRegion(worker, img, name, pred, opts = {}) {
     if (score(t2) > score(t1)) text = t2;
     else if (score(t1) >= 0) text = t1;
     else if (score(t2) >= 0) text = t2;
+    else if (esHora) text = t2 || t1;
     console.log(`[${name}]`, JSON.stringify(text || { t1, t2 }));
     return text;
   }
@@ -280,7 +310,8 @@ async function ocrRegion(worker, img, name, pred, opts = {}) {
     tessedit_char_whitelist: '',
   });
   const { data } = await worker.recognize(await roi.getBuffer('image/png'));
-  const text = String(data.text || '').trim();
+  let text = String(data.text || '').trim();
+  if (esTitulo) text = limpiarTituloOcr(text);
   console.log(`[${name}]`, JSON.stringify(text));
   return text;
 }
@@ -298,28 +329,27 @@ async function main() {
 
   const worker = await createWorker('eng');
   let titulo = await ocrRegion(worker, img, 'titulo', PRED.titulo, {
-    psm: '6', dilatar: false, suprimir: false,
+    psm: '6', dilatar: false, suprimir: false, esTitulo: true,
   });
   if (!titulo || titulo.replace(/\s/g, '').length < 3) {
     const osc = await ocrRegion(worker, img, 'titulo', PRED.tituloOscuro, {
-      psm: '6', dilatar: true, suprimir: false,
+      psm: '6', dilatar: true, suprimir: false, esTitulo: true,
     });
     if (osc) titulo = osc;
   }
-  let fecha = await ocrRegion(worker, img, 'fecha', PRED.rojo, {
-    psm: '7', whitelist: WL, dilatar: true, suprimir: true,
+  const fechaRojo = await ocrRegion(worker, img, 'fecha', PRED.rojo, {
+    psm: '7', whitelist: WL_FECHA, dilatar: true, suprimir: true,
   });
-  if (!pareceFecha(fecha)) {
-    const azul = await ocrRegion(worker, img, 'fecha', PRED.azul, {
-      psm: '7', whitelist: WL, dilatar: true, suprimir: true,
-    });
-    fecha = pareceFecha(azul) ? azul : [fecha, azul].filter(Boolean).join('\n');
-  }
+  const fechaAzul = await ocrRegion(worker, img, 'fecha', PRED.azul, {
+    psm: '7', whitelist: WL_FECHA, dilatar: true, suprimir: true,
+  });
+  const fecha = [fechaRojo, fechaAzul].filter(Boolean).join('\n');
   const horaInicio = await ocrRegion(worker, img, 'horaInicio', PRED.amarillo, {
-    psm: '7', whitelist: WL, esHora: true, dilatar: true, suprimir: false,
+    psm: '7', whitelist: WL_HORA, esHora: true, dilatar: true, suprimir: false,
   });
   const horaFin = await ocrRegion(worker, img, 'horaFin', PRED.verde, {
-    psm: '7', whitelist: WL, esHora: true, dilatar: true, suprimir: false,
+    psm: '7', whitelist: WL_HORA, esHora: true, dilatar: true, suprimir: false,
+    recortarInferior: true,
   });
   await worker.terminate();
 
@@ -332,8 +362,8 @@ async function main() {
   const ok =
     /prueba\s*0?1/i.test(datos.titulo) &&
     datos.fecha === '03-07-26' &&
-    datos.horaInicio === '13:30 hrs' &&
-    datos.horaFin === '14:00 hrs';
+    datos.horaInicio === '13:30' &&
+    datos.horaFin === '14:00';
 
   if (!ok) {
     console.error('\nAún no cumple el esperado completo.');

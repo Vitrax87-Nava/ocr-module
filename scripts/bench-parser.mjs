@@ -14,14 +14,14 @@ const casos = [
     capas: {
       titulo: 'Prueba 01',
       fecha: '03-07-26\n03-Jul-26',
-      horaInicio: '13:30 hrs',
-      horaFin: '14:00 hrs',
+      horaInicio: '13:30',
+      horaFin: '14:00',
     },
     esperado: {
       titulo: 'Prueba 01',
       fecha: '03-07-26',
-      horaInicio: '13:30 hrs',
-      horaFin: '14:00 hrs',
+      horaInicio: '13:30',
+      horaFin: '14:00',
       nombreSugerido: 'Prueba 01 03-07-26',
     },
   },
@@ -31,13 +31,13 @@ const casos = [
       titulo: 'Ueha, CLR.',
       fecha: '27-JUL-26',
       horaInicio: '12:00.',
-      horaFin: '14:00 hrs',
+      horaFin: '14:00',
     },
     esperado: {
       titulo: 'Ueha CLR',
       fecha: '27-07-26',
-      horaInicio: '12:00 hrs',
-      horaFin: '14:00 hrs',
+      horaInicio: '12:00',
+      horaFin: '14:00',
       nombreSugerido: 'Ueha CLR 27-07-26',
     },
   },
@@ -52,8 +52,8 @@ const casos = [
     esperado: {
       titulo: 'Prueba 02',
       fecha: '03-07-26',
-      horaInicio: '19:00 hrs',
-      horaFin: '14:00 hrs',
+      horaInicio: '19:00',
+      horaFin: '14:00',
       nombreSugerido: 'Prueba 02 03-07-26',
     },
   },
@@ -84,9 +84,105 @@ const casos = [
     esperado: {
       titulo: 'Prueba 01',
       fecha: '03-07-26',
-      horaInicio: '13:30 hrs',
-      horaFin: '14:00 hrs',
+      horaInicio: '13:30',
+      horaFin: '14:00',
       nombreSugerido: 'Prueba 01 03-07-26',
+    },
+  },
+  {
+    nombre: 'fecha por regex con texto secundario',
+    capas: {
+      titulo: 'Prueba 01.',
+      fecha: 'xxx ruido 03-07-26 lado derecho Jul',
+      horaInicio: '1330',
+      horaFin: '14:00',
+    },
+    esperado: {
+      titulo: 'Prueba 01',
+      fecha: '03-07-26',
+      horaInicio: '13:30',
+      horaFin: '14:00',
+      nombreSugerido: 'Prueba 01 03-07-26',
+    },
+  },
+  {
+    nombre: 'hora fin OCR OD→00',
+    capas: {
+      titulo: 'Prueba 01',
+      fecha: '03-07-26',
+      horaInicio: '13:30',
+      horaFin: '14 ODh-s',
+    },
+    esperado: {
+      titulo: 'Prueba 01',
+      fecha: '03-07-26',
+      horaInicio: '13:30',
+      horaFin: '14:00',
+      nombreSugerido: 'Prueba 01 03-07-26',
+    },
+  },
+  {
+    nombre: 'fecha mes OCR 17→07 y año 4 dígitos',
+    capas: {
+      titulo: 'Prueba 01',
+      fecha: '03-17-2026',
+      horaInicio: '13:30',
+      horaFin: '14:00',
+    },
+    esperado: {
+      titulo: 'Prueba 01',
+      fecha: '03-07-26',
+      horaInicio: '13:30',
+      horaFin: '14:00',
+      nombreSugerido: 'Prueba 01 03-07-26',
+    },
+  },
+  {
+    nombre: 'fecha mes absurdo → vacío',
+    capas: {
+      titulo: 'Capacitacion',
+      fecha: '03-99-26',
+      horaInicio: '',
+      horaFin: '',
+    },
+    esperado: {
+      titulo: 'Capacitacion',
+      fecha: '',
+      horaInicio: '',
+      horaFin: '',
+      nombreSugerido: 'Capacitacion',
+    },
+  },
+  {
+    nombre: 'fecha compacta whitelist 030726',
+    capas: {
+      titulo: 'Prueba 01',
+      fecha: '030726',
+      horaInicio: '13:30',
+      horaFin: '14:00',
+    },
+    esperado: {
+      titulo: 'Prueba 01',
+      fecha: '03-07-26',
+      horaInicio: '13:30',
+      horaFin: '14:00',
+      nombreSugerido: 'Prueba 01 03-07-26',
+    },
+  },
+  {
+    nombre: 'hora 24h hasta 23:55',
+    capas: {
+      titulo: 'Turno noche',
+      fecha: '03-07-26',
+      horaInicio: '14:00',
+      horaFin: '23:55',
+    },
+    esperado: {
+      titulo: 'Turno noche',
+      fecha: '03-07-26',
+      horaInicio: '14:00',
+      horaFin: '23:55',
+      nombreSugerido: 'Turno noche 03-07-26',
     },
   },
 ];
@@ -116,7 +212,7 @@ for (const c of casos) {
 }
 
 console.log('extraerFecha(03-Jul-26)=', extraerFecha('03-Jul-26'));
-console.log('extraerHoras(13:30 hrs)=', extraerHoras('13:30 hrs'));
+console.log('extraerHoras(13:30)=', extraerHoras('13:30'));
 console.log('construirNombreSugerido=', construirNombreSugerido('Ueha, CLR', '01-01-26'));
 
 if (fallos) {

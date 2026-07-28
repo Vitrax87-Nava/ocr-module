@@ -1,17 +1,27 @@
 /**
- * parser.js — Mapeo directo por capas de color (genérico).
- * Sin adivinar: capa vacía o formato inválido → campo "".
+ * parser.js — Mapeo por zonas / patrones.
+ *
+ *  - Título: texto libre limpio → campo Título + Nombre sugerido
+ *  - Fecha: regex DD-MM-YY(YY) / DD/MM/… + rangos día 1–31, mes 1–12
+ *  - Horas: laterales; salida estándar 24h `HH:mm` (sin sufijo)
  */
 
 const SUFIJO_HORA = String.raw`(?:[bh]r[s5]|[bh]rs?|hos|hs|h|[ap]\.?m\.?)`;
 
-/** Fecha numérica: 27-07-26, 27/07/2026, 27.07.26 */
+/** Fecha numérica estricta: 03-07-26, 03/07/2026, 03.07.26 */
 const REGEX_FECHA_NUM =
   /(\d{1,2})\s*[-/=._~:]+?\s*(\d{1,2})\s*[-/=._~:]+?\s*(\d{2,4})/;
 
-/** 27-Julio-2026, 27-JUL-26, 27 de Julio de 2026 */
+/** Variante compacta tolerante a ruido OCR entre tokens */
+const REGEX_FECHA_NUM_GLOBAL =
+  /(\d{2})\s*[-/=._~:]\s*(\d{2})\s*[-/=._~:]\s*(\d{2,4})/g;
+
+/** 27-Julio-2026, 27-JUL-26, 03 Jul 26, 03 de Julio de 2026 */
 const REGEX_FECHA_TEXTO =
   /(\d{1,2})\s*[-/.\s]*(?:de\s+)?([A-Za-zÁÉÍÓÚáéíóúüñ]{3,})\s*[-/.\s]*(?:de\s+)?(\d{2,4})/i;
+
+const REGEX_FECHA_TEXTO_GLOBAL =
+  /(\d{1,2})\s*[-/.\s]*(?:de\s+)?(Ene(?:ro)?|Feb(?:rero)?|Mar(?:zo)?|Abr(?:il)?|May(?:o)?|Jun(?:io)?|Jul(?:io)?|Ago(?:sto)?|Sep(?:t(?:iembre)?)?|Set(?:iembre)?|Oct(?:ubre)?|Nov(?:iembre)?|Dic(?:iembre)?)\s*[-/.\s]*(?:de\s+)?(\d{2,4})/gi;
 
 const MESES = {
   enero: '01', ene: '01',
@@ -99,6 +109,8 @@ function normalizarRuidoOcr(texto) {
     // Tipografía OCR: el 3 manuscrito a menudo se lee como "s"
     .replace(/\b([01]?\d|2[0-3])\s*[sS]([0-5]\d)\b/g, '$1:3$2')
     .replace(/\b([01]?\d|2[0-3])\s*[sS][0Oo]\b/g, '$1:30')
+    // "14 ODh" / "14 ODA" (00 manuscrito → OD)
+    .replace(/\b([01]?\d|2[0-3])\s*[OoD]{1,2}[A-Za-z]*\b/g, '$1:00')
     .replace(/[=_~]+/g, '-')
     .replace(/-{2,}/g, '-')
     .replace(/[.]{2,}/g, '.')
@@ -116,46 +128,112 @@ function corregirDigitosCandidato(texto) {
     .replace(/[£]/g, '1');
 }
 
-function normalizarFechaPartes(dia, mes, anio) {
-  if (!dia || !mes || !anio) return '';
+/**
+ * Corrige mes OCR fuera de 1–12 (trazos/cuadrícula).
+ * Ej.: 17→07, 70→07, 13→03. Si no hay corrección fiable → null.
+ */
+function corregirMesOcr(mes) {
+  let mi = Number(mes);
+  if (Number.isNaN(mi)) return null;
+  if (mi >= 1 && mi <= 12) return mi;
 
-  const d = String(dia).padStart(2, '0');
-  const m = String(mes).padStart(2, '0');
-  let a = String(anio);
+  // 13–19: dígito líder "1" fantasma → 3–9
+  if (mi >= 13 && mi <= 19) {
+    const r = mi % 10;
+    if (r >= 1 && r <= 9) return r;
+  }
 
-  if (a.length === 4) a = a.slice(-2);
-  else a = a.padStart(2, '0');
+  // 70–79: "7" + ruido (p. ej. 70≈07)
+  if (mi >= 70 && mi <= 79) {
+    if (mi === 70) return 7;
+    const r = mi % 10;
+    if (r >= 1 && r <= 9) return r;
+  }
 
-  const di = Number(d);
-  const mi = Number(m);
-  if (di < 1 || di > 31 || mi < 1 || mi > 12) return '';
+  // 21–29: a veces "2" de cuadrícula delante del mes
+  if (mi >= 21 && mi <= 29) {
+    const r = mi % 10;
+    if (r >= 1 && r <= 9) return r;
+  }
 
-  return `${d}-${m}-${a}`;
-}
-
-function formatearHora(h, m) {
-  if (h == null || m == null) return '';
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')} hrs`;
+  return null;
 }
 
 /**
- * Descarta horas absurdas típicas de OCR (00:17, 00:35, etc.).
- * Capacitación: jornada 06:00–22:59; minutos en múltiplos de 5;
- * preferencia implícita :00/:30 vía ranking en elegirHora*.
+ * Corrige día OCR fuera de 1–31. Si no es recuperable → null.
+ */
+function corregirDiaOcr(dia) {
+  let di = Number(dia);
+  if (Number.isNaN(di)) return null;
+  if (di >= 1 && di <= 31) return di;
+
+  // 32–39: líder "3" + dígito (poco fiable) → ignorar salvo 30/31 ya válidos
+  if (di >= 40 && di <= 49) {
+    const r = di % 10;
+    if (r >= 1 && r <= 9) return r;
+  }
+
+  return null;
+}
+
+/**
+ * Normaliza a DD-MM-YY con validación de rangos (día≤31, mes≤12).
+ * Año de 2 dígitos se presenta limpio; de 4 se reduce a YY.
+ */
+function normalizarFechaPartes(dia, mes, anio) {
+  if (dia == null || mes == null || anio == null) return '';
+  if (dia === '' || mes === '' || anio === '') return '';
+
+  let di = corregirDiaOcr(dia);
+  let mi = corregirMesOcr(mes);
+
+  // Si el mes sigue inválido pero el "día" es un mes válido, invertir (MM-DD leído como DD-MM)
+  if (mi == null) {
+    const diaComoMes = corregirMesOcr(dia);
+    const mesComoDia = corregirDiaOcr(mes);
+    if (diaComoMes != null && mesComoDia != null) {
+      di = mesComoDia;
+      mi = diaComoMes;
+    }
+  }
+
+  if (di == null || mi == null) return '';
+
+  let a = String(anio).replace(/\D/g, '');
+  if (!a) return '';
+  if (a.length >= 4) a = a.slice(-2);
+  else a = a.padStart(2, '0');
+  if (a.length !== 2) return '';
+
+  // Revalidación final de rangos
+  if (di < 1 || di > 31 || mi < 1 || mi > 12) return '';
+
+  return `${String(di).padStart(2, '0')}-${String(mi).padStart(2, '0')}-${a}`;
+}
+
+/** Salida estándar 24h: HH:mm (sin "hrs" ni sufijos). */
+function formatearHora(h, m) {
+  if (h == null || m == null) return '';
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+/**
+ * Valida hora en formato 24h (00:00–23:59).
+ * Descarta ruido OCR típico: madrugada &lt; 06 (salvo que se relaje),
+ * minutos fuera de rejilla de 5.
  */
 export function esHoraPlausible(hi, mi) {
   if (Number.isNaN(hi) || Number.isNaN(mi)) return false;
   if (hi < 0 || hi > 23 || mi < 0 || mi > 59) return false;
-  // 00:xx / 01–05:xx casi siempre es ruido de cuadrícula o trazo perdido
+  // 00–05:xx casi siempre es ruido de cuadrícula en portadas de capacitación
   if (hi < 6) return false;
-  if (hi > 22) return false;
   // Minutos "sucios" (17, 35, 41…) → alucinación; forzar rejilla de 5
   if (mi % 5 !== 0) return false;
   return true;
 }
 
 /**
- * Normaliza a HH:MM limpio o "" si no es plausible.
+ * Normaliza a HH:mm (24h) limpio o "" si no es plausible.
  */
 export function normalizarHoraLimpia(h, m) {
   const hi = Number(h);
@@ -249,12 +327,52 @@ export function extraerFecha(texto) {
   let normalizado = corregirDigitosCandidato(base);
   normalizado = normalizarRuidoOcr(normalizado);
   normalizado = prepararTextoFechaHora(normalizado);
-  const soloNum = normalizado.replace(/[^0-9\-/\s.:]/g, ' ').replace(/\s+/g, ' ').trim();
+
+  // Canal estricto: solo dígitos y -/ (igual que whitelist del motor)
+  const estricto = normalizado
+    .replace(/[^0-9\-/]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/[-/]{2,}/g, '-')
+    .trim();
+
+  const soloNum = estricto || normalizado.replace(/[^0-9\-/\s.:]/g, ' ').replace(/\s+/g, ' ').trim();
+
+  REGEX_FECHA_NUM_GLOBAL.lastIndex = 0;
+  let mGlobal;
+  while ((mGlobal = REGEX_FECHA_NUM_GLOBAL.exec(soloNum)) !== null) {
+    const fecha = normalizarFechaPartes(mGlobal[1], mGlobal[2], mGlobal[3]);
+    if (fecha) return fecha;
+  }
 
   const mNum = soloNum.match(REGEX_FECHA_NUM) || normalizado.match(REGEX_FECHA_NUM);
   if (mNum) {
     const fecha = normalizarFechaPartes(mNum[1], mNum[2], mNum[3]);
     if (fecha) return fecha;
+  }
+
+  // Compacto 6–8 dígitos: DDMMYY / DDMMYYYY
+  const digitos = soloNum.replace(/\D/g, '');
+  if (digitos.length === 6 || digitos.length === 8) {
+    const fecha = normalizarFechaPartes(
+      digitos.slice(0, 2),
+      digitos.slice(2, 4),
+      digitos.slice(4)
+    );
+    if (fecha) return fecha;
+  }
+
+  REGEX_FECHA_TEXTO_GLOBAL.lastIndex = 0;
+  let mTxtG;
+  while ((mTxtG = REGEX_FECHA_TEXTO_GLOBAL.exec(normalizado)) !== null) {
+    const mesKey = mTxtG[2]
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase();
+    const mesNum = MESES[mesKey];
+    if (mesNum) {
+      const fecha = normalizarFechaPartes(mTxtG[1], mesNum, mTxtG[3]);
+      if (fecha) return fecha;
+    }
   }
 
   const mTxt = normalizado.match(REGEX_FECHA_TEXTO);
@@ -329,14 +447,14 @@ export function extraerHoras(texto) {
 
 function elegirHoraInicio(horas) {
   if (!horas?.length) return '';
-  const enPunto = horas.filter((h) => /:(00|30)\s*hrs$/.test(h));
+  const enPunto = horas.filter((h) => /:(00|30)$/.test(h));
   if (enPunto.length) return enPunto[0];
   return horas[0];
 }
 
 function elegirHoraFin(horas) {
   if (!horas?.length) return '';
-  const enPunto = horas.filter((h) => /:(00|30)\s*hrs$/.test(h));
+  const enPunto = horas.filter((h) => /:(00|30)$/.test(h));
   if (enPunto.length) return enPunto[enPunto.length - 1];
   return horas[horas.length - 1];
 }
@@ -391,14 +509,19 @@ export function parsearTextoCapacitacion(textoRaw, nombreArchivo = '', capas = n
   const horaInicioRaw = String(c.horaInicio || '').trim();
   const horaFinRaw = String(c.horaFin || '').trim();
 
+  // Título fluido → campo Título + Nombre sugerido
   let titulo = tituloCapa ? limpiarTitulo(tituloCapa) : '';
   if (!titulo && nombreArchivo) {
     titulo = limpiarTitulo(nombreArchivo.replace(/\.[^.]+$/, '')) || '';
   }
 
+  // Fecha: localizar patrón regex en el texto de la zona (ignorar basura)
   let fecha = '';
-  if (fechaRaw && (pareceFechaLegible(fechaRaw) || /\d{1,2}\s*[-/.:]/.test(fechaRaw))) {
+  if (fechaRaw) {
     fecha = extraerFecha(fechaRaw);
+  }
+  if (!fecha && textoRaw) {
+    fecha = extraerFecha(textoRaw);
   }
 
   let horasInicio = [];
@@ -417,10 +540,9 @@ export function parsearTextoCapacitacion(textoRaw, nombreArchivo = '', capas = n
 
   const fechaTxt = formatearFechaTxt(fecha);
   const tituloPdf = titulo;
-  // Título limpio alimenta de inmediato el nombre sugerido
   const nombreSugerido = construirNombreSugerido(titulo, fecha);
 
-  return {
+  const datos = {
     titulo,
     fecha,
     fechaTxt,
@@ -428,5 +550,28 @@ export function parsearTextoCapacitacion(textoRaw, nombreArchivo = '', capas = n
     horaFin,
     tituloPdf,
     nombreSugerido,
+  };
+
+  return {
+    ...datos,
+    /** Payload plano listo para google.script.run / Code.gs */
+    gas: construirPayloadGas(datos),
+  };
+}
+
+/**
+ * Estructura limpia para Google Apps Script (Drive / Hojas).
+ * @param {object} datos
+ * @param {object} [extras] p. ej. { fileId, spreadsheetId }
+ */
+export function construirPayloadGas(datos = {}, extras = {}) {
+  return {
+    titulo: String(datos.titulo || '').trim(),
+    fecha: String(datos.fecha || '').trim(),
+    horaInicio: String(datos.horaInicio || '').trim(),
+    horaFin: String(datos.horaFin || '').trim(),
+    nombreSugerido: String(datos.nombreSugerido || '').trim(),
+    fechaTxt: String(datos.fechaTxt || '').trim(),
+    ...extras,
   };
 }

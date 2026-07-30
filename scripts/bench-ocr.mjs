@@ -1,11 +1,11 @@
 /**
- * scripts/bench-ocr.mjs — OCR real (espejo de ocr-engine.js: zonas / regex / laterales).
+ * scripts/bench-ocr.mjs — OCR real (espejo del motor en ocr.js: zonas / regex / laterales).
  */
 import { createWorker } from 'tesseract.js';
 import { Jimp } from 'jimp';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { parsearTextoCapacitacion } from '../parser.js';
+import { parsearTextoCapacitacion } from '../ocr.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const IMG = path.join(__dirname, '../fixtures/portada-muestra.png');
@@ -15,10 +15,10 @@ const WL_FECHA = '0123456789-/';
 const WL_HORA = '0123456789:';
 
 const ROI_FIJAS = {
-  titulo: { x0: 0, y0: 0, x1: 1, y1: 0.72 },
-  fecha: { x0: 0.2, y0: 0.55, x1: 0.75, y1: 0.9 },
-  horaInicio: { x0: 0, y0: 0.72, x1: 0.4, y1: 1 },
-  horaFin: { x0: 0.48, y0: 0.72, x1: 1, y1: 1 },
+  titulo: { x0: 0.08, y0: 0.02, x1: 0.92, y1: 0.52 },
+  fecha: { x0: 0.15, y0: 0.45, x1: 0.85, y1: 0.9 },
+  horaInicio: { x0: 0, y0: 0.68, x1: 0.45, y1: 1 },
+  horaFin: { x0: 0.5, y0: 0.68, x1: 1, y1: 1 },
 };
 
 function rgbAHsv(r, g, b) {
@@ -361,14 +361,14 @@ async function main() {
 
   const ok =
     /prueba\s*0?1/i.test(datos.titulo) &&
-    datos.fecha === '03-07-26' &&
+    datos.fecha === '03-07-2026' &&
     datos.horaInicio === '13:30' &&
     datos.horaFin === '14:00';
 
   if (!ok) {
     console.error('\nAún no cumple el esperado completo.');
     console.log('titulo OK?', /prueba/i.test(datos.titulo), datos.titulo);
-    console.log('fecha OK?', datos.fecha === '03-07-26', datos.fecha);
+    console.log('fecha OK?', datos.fecha === '03-07-2026', datos.fecha);
     console.log('horaInicio OK?', datos.horaInicio);
     console.log('horaFin OK?', datos.horaFin);
     process.exit(2);

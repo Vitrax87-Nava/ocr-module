@@ -737,6 +737,9 @@
             <div class="drop-icon" aria-hidden="true">⬆</div>
             <div>Arrastra un archivo o <strong>selecciónalo</strong></div>
             <div class="hint">PDF · PNG · JPG · WEBP — el OCR arranca solo</div>
+            <div class="hint" style="margin-top:0.35rem">
+              En PDF/presentaciones solo se analiza la <strong>primera página o diapositiva</strong>.
+            </div>
           </label>
 
           <p class="file-meta" id="fileMeta"></p>
@@ -789,7 +792,7 @@
 
             <div class="field">
               <label for="fFecha">Fecha</label>
-              <input id="fFecha" type="text" autocomplete="off" placeholder="DD-MM-YY" />
+              <input id="fFecha" type="text" autocomplete="off" placeholder="DD-MM-YYYY" />
               <div class="fecha-stack" style="margin-top:0.55rem">
                 <div class="fecha-chip">Fecha IxT: <strong id="fFechaTxt">—</strong></div>
               </div>
@@ -857,11 +860,9 @@
       cargarPaginaComoCanvas,
       recortarCanvas,
       payloadDesdeFormulario,
-    } from './index.js';
-    import {
       construirNombreSugerido,
       formatearFechaTxt,
-    } from './parser.js';
+    } from './ocr.js';
 
     const drop = document.getElementById('drop');
     const input = document.getElementById('file');
@@ -1136,16 +1137,23 @@
           if (campo === 'titulo' || campo === 'fecha') sincronizarNombreYFechaTxt();
           setBadge('ok', 'Campo actualizado');
           setStatus(`Asignado a ${campo}: «${res.valor}»`, 'ok');
-        } else if (res.exito && res.rawText) {
-          // Fallback: mostrar crudo si el parser no normalizó
+        } else if (
+          res.exito &&
+          res.rawText &&
+          campo === 'titulo'
+        ) {
+          // Solo título puede usar crudo; fecha/horas exigen valor normalizado
           inputEl.value = res.rawText;
-          if (campo === 'titulo' || campo === 'fecha') sincronizarNombreYFechaTxt();
+          sincronizarNombreYFechaTxt();
           setBadge('ok', 'Campo actualizado');
           setStatus(`Asignado texto OCR a ${campo} (revisa el formato).`, 'ok');
         } else {
           setBadge('err', 'Sin texto');
           setStatus(
-            res.error || 'No se pudo leer el recorte. Prueba otra zona o edita a mano.',
+            res.error ||
+              (campo === 'fecha'
+                ? 'No se pudo leer una fecha válida. Recorta 30-Julio-2026 o escribe DD-MM-YYYY.'
+                : 'No se pudo leer el recorte. Prueba otra zona o edita a mano.'),
             'err'
           );
         }

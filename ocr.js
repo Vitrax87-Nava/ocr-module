@@ -2058,3 +2058,44 @@ export function payloadDesdeFormulario({
   }
   return construirPayloadGas(datos, extras);
 }
+/* ==========================================================================
+ * RECEPCIÓN DE MENSAJES BASE64 Y EVENTOS DE ESCÁNER OCR
+ * ========================================================================== */
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('message', async (e) => {
+    if (e.data && e.data.type === 'LOAD_BASE64_FILE') {
+      const { base64, mimeType, nombre } = e.data;
+      try {
+        const byteCharacters = atob(base64);
+        const byteNumbers = new Array(byteCharacters.length);
+        for (let i = 0; i < byteCharacters.length; i++) {
+          byteNumbers[i] = byteCharacters.charCodeAt(i);
+        }
+        const byteArray = new Uint8Array(byteNumbers);
+        const blob = new Blob([byteArray], { type: mimeType });
+        const file = new File([blob], nombre || 'documento.pdf', { type: mimeType });
+
+        console.log('[OCR-Engine] Documento recibido vía Base64:', file.name);
+
+        if (typeof procesarDocumento === 'function') {
+          const resultado = await procesarDocumento(file);
+          
+          if (resultado && resultado.datos) {
+            window.parent.postMessage({
+              type: 'OCR_DATA_READY',
+              payload: {
+                titulo: resultado.datos.titulo || '',
+                fecha: resultado.datos.fecha || '',
+                horaInicio: resultado.datos.horaInicio || '',
+                horaFin: resultado.datos.horaFin || ''
+              }
+            }, '*');
+          }
+        }
+      } catch(err) {
+        console.error('[OCR-Engine] Error al decodificar Base64:', err);
+      }
+    }
+  });
+}

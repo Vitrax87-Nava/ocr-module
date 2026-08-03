@@ -2058,9 +2058,8 @@ export function payloadDesdeFormulario({
   }
   return construirPayloadGas(datos, extras);
 }
-
 /* ==========================================================================
- * 4) DETECTOR DRAG & DROP DE TARJETAS DESDE EL PANEL DE USUARIO
+ * 4) DETECTOR DRAG & DROP Y RECEPTOR DE BASE64 DESDE GOOGLE APPS SCRIPT
  * ========================================================================== */
 
 if (typeof window !== 'undefined') {
@@ -2074,7 +2073,7 @@ if (typeof window !== 'undefined') {
   dropArea.addEventListener('drop', async (e) => {
     e.preventDefault();
 
-    // 1. Si el usuario suelta un archivo directo desde su PC
+    // 1. Si el usuario suelta un archivo local directo desde su PC
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       const file = e.dataTransfer.files[0];
       if (typeof window.procesarArchivoOcr === 'function') {
@@ -2089,21 +2088,36 @@ if (typeof window !== 'undefined') {
     const rawData = e.dataTransfer.getData('application/json') || e.dataTransfer.getData('text/plain');
     if (rawData) {
       try {
-        const data = JSON.parse(rawData);
-        if (data.url) {
-          console.log('[OCR-Engine] Cargar documento desde tarjeta arrastrada:', data.nombre);
-          const response = await fetch(data.url);
-          const blob = await response.blob();
-          const file = new File([blob], data.nombre || 'documento.pdf', { type: 'application/pdf' });
+        let fileId = rawData;
+        try {
+          const data = JSON.parse(rawData);
+          fileId = data.id || rawData;
+        } catch(err){}
 
-          if (typeof window.procesarArchivoOcr === 'function') {
-            window.procesarArchivoOcr(file);
-          } else if (typeof procesarDocumento === 'function') {
-            procesarDocumento(file);
-          }
-        }
+        console.log('[OCR-Engine] Solicitando archivo Base64 a Apps Script:', fileId);
+        window.parent.postMessage({ type: 'REQUEST_DRIVE_FILE', fileId: fileId }, '*');
       } catch (err) {
         console.warn('[OCR-Engine] Falló la lectura de tarjeta arrastrada:', err);
+      }
+    }
+  });
+
+  // Escuchar cuando el panel responda con los bytes del archivo en Base64
+  window.addEventListener('message', async (e) => {
+    if (e.data && e.data.type === 'LOAD_BASE64_FILE') {
+      const { base64, mimeType, nombre } = e.data;
+      try {
+        const res = await fetch(`data:${mimeType};base64,${base64}`);
+        const blob = await res.blob();
+        const file = new File([blob], nombre || 'documento.pdf', { type: mimeType });
+
+        if (typeof window.procesarArchivoOcr === 'function') {
+          window.procesarArchivoOcr(file);
+        } else if (typeof procesarDocumento === 'function') {
+          procesarDocumento(file);
+        }
+      } catch(err) {
+        console.error('[OCR-Engine] Error decodificando Base64:', err);
       }
     }
   });

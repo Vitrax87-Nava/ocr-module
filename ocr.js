@@ -2058,6 +2058,7 @@ export function payloadDesdeFormulario({
   }
   return construirPayloadGas(datos, extras);
 }
+
 /* ==========================================================================
  * 4) DETECTOR DRAG & DROP Y RECEPTOR DE BASE64 DESDE GOOGLE APPS SCRIPT
  * ========================================================================== */
@@ -2073,7 +2074,7 @@ if (typeof window !== 'undefined') {
   dropArea.addEventListener('drop', async (e) => {
     e.preventDefault();
 
-    // 1. Si el usuario suelta un archivo local directo desde su PC
+    // 1. Archivo local directo desde la computadora
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       const file = e.dataTransfer.files[0];
       if (typeof window.procesarArchivoOcr === 'function') {
@@ -2084,7 +2085,7 @@ if (typeof window !== 'undefined') {
       return;
     }
 
-    // 2. Si el usuario suelta una tarjeta arrastrada desde el panel de usuario
+    // 2. Tarjeta enviada vía transferencia directa
     const rawData = e.dataTransfer.getData('application/json') || e.dataTransfer.getData('text/plain');
     if (rawData) {
       try {
@@ -2102,14 +2103,21 @@ if (typeof window !== 'undefined') {
     }
   });
 
-  // Escuchar cuando el panel responda con los bytes del archivo en Base64
+  // Receptor de datos Base64 proveniente del Panel
   window.addEventListener('message', async (e) => {
     if (e.data && e.data.type === 'LOAD_BASE64_FILE') {
       const { base64, mimeType, nombre } = e.data;
       try {
-        const res = await fetch(`data:${mimeType};base64,${base64}`);
-        const blob = await res.blob();
+        const byteCharacters = atob(base64);
+        const byteNumbers = new Array(byteCharacters.length);
+        for (let i = 0; i < byteCharacters.length; i++) {
+          byteNumbers[i] = byteCharacters.charCodeAt(i);
+        }
+        const byteArray = new Uint8Array(byteNumbers);
+        const blob = new Blob([byteArray], { type: mimeType });
         const file = new File([blob], nombre || 'documento.pdf', { type: mimeType });
+
+        console.log('[OCR-Engine] Archivo recibido decodificado en memoria:', file.name);
 
         if (typeof window.procesarArchivoOcr === 'function') {
           window.procesarArchivoOcr(file);
@@ -2117,7 +2125,7 @@ if (typeof window !== 'undefined') {
           procesarDocumento(file);
         }
       } catch(err) {
-        console.error('[OCR-Engine] Error decodificando Base64:', err);
+        console.error('[OCR-Engine] Error al decodificar Base64:', err);
       }
     }
   });

@@ -1559,7 +1559,7 @@ function formatearHora(h, m) {
 
 /**
  * Valida hora en formato 24h (00:00–23:59).
- * Descarta ruido OCR típico: madrugada &lt; 06 (salvo que se relaje),
+ * Descarta ruido OCR típico: madrugada < 06 (salvo que se relaje),
  * minutos fuera de rejilla de 5.
  */
 export function esHoraPlausible(hi, mi) {
@@ -2057,4 +2057,54 @@ export function payloadDesdeFormulario({
     datos.nombreSugerido = String(nombreSugerido).trim();
   }
   return construirPayloadGas(datos, extras);
+}
+
+/* ==========================================================================
+ * 4) DETECTOR DRAG & DROP DE TARJETAS DESDE EL PANEL DE USUARIO
+ * ========================================================================== */
+
+if (typeof window !== 'undefined') {
+  const dropArea = document.getElementById('dropZone') || document.body;
+
+  dropArea.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+
+  dropArea.addEventListener('drop', async (e) => {
+    e.preventDefault();
+
+    // 1. Si el usuario suelta un archivo directo desde su PC
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      const file = e.dataTransfer.files[0];
+      if (typeof window.procesarArchivoOcr === 'function') {
+        window.procesarArchivoOcr(file);
+      } else if (typeof procesarDocumento === 'function') {
+        procesarDocumento(file);
+      }
+      return;
+    }
+
+    // 2. Si el usuario suelta una tarjeta arrastrada desde el panel de usuario
+    const rawData = e.dataTransfer.getData('application/json') || e.dataTransfer.getData('text/plain');
+    if (rawData) {
+      try {
+        const data = JSON.parse(rawData);
+        if (data.url) {
+          console.log('[OCR-Engine] Cargar documento desde tarjeta arrastrada:', data.nombre);
+          const response = await fetch(data.url);
+          const blob = await response.blob();
+          const file = new File([blob], data.nombre || 'documento.pdf', { type: 'application/pdf' });
+
+          if (typeof window.procesarArchivoOcr === 'function') {
+            window.procesarArchivoOcr(file);
+          } else if (typeof procesarDocumento === 'function') {
+            procesarDocumento(file);
+          }
+        }
+      } catch (err) {
+        console.warn('[OCR-Engine] Falló la lectura de tarjeta arrastrada:', err);
+      }
+    }
+  });
 }
